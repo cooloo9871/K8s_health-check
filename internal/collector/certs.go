@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/brobridge/k8s-health-check/internal/model"
+	"k8s-health-check/internal/model"
 )
 
 // collectCerts walks the kubeadm-style PKI directory (when mounted via

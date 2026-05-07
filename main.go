@@ -9,8 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/brobridge/k8s-health-check/internal/collector"
-	"github.com/brobridge/k8s-health-check/internal/report"
+	"k8s-health-check/internal/advisor"
+	"k8s-health-check/internal/collector"
+	"k8s-health-check/internal/report"
 )
 
 func main() {
@@ -19,6 +20,7 @@ func main() {
 	kubeconfig := flag.String("kubeconfig", "", "optional path to kubeconfig (when running outside cluster)")
 	pkiDir := flag.String("pki-dir", "/host/etc/kubernetes/pki", "directory to scan for kubeadm-style certificates (optional)")
 	sleepAfter := flag.Duration("sleep-after", 0, "after writing the PDF, sleep for this long so an operator can kubectl cp the file")
+	env := flag.String("env", "auto", "environment label that tunes recommendation thresholds: dev | staging | production | auto")
 	flag.Parse()
 
 	if err := os.MkdirAll(*outDir, 0o755); err != nil {
@@ -35,6 +37,16 @@ func main() {
 
 	log.Println("collecting cluster health data...")
 	rep := c.Collect(ctx)
+
+	// 依 cluster 狀態 + --env 產生結論與建議。
+	envArg := *env
+	if envArg == "auto" {
+		envArg = ""
+	}
+	advisor.Analyze(rep, envArg)
+	log.Printf("advisor: 環境=%s 整體=%s 發現=%d 建議=%d",
+		rep.Conclusion.Environment, rep.Conclusion.OverallStatus,
+		len(rep.Conclusion.Findings), len(rep.Conclusion.Recommendations))
 
 	stamp := time.Now().Format("20060102-150405")
 	clusterTag := rep.Cluster.Distribution

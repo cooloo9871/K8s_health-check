@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/brobridge/k8s-health-check/internal/model"
+	"k8s-health-check/internal/model"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

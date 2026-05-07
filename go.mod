@@ -1,4 +1,4 @@
-module github.com/brobridge/k8s-health-check
+module k8s-health-check
 
 go 1.22.0
 

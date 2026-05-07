@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/brobridge/k8s-health-check/internal/model"
+	"k8s-health-check/internal/model"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"

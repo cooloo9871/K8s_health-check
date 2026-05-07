@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/brobridge/k8s-health-check/internal/model"
+	"k8s-health-check/internal/model"
 )
 
 // collectAPIHealth probes the kube-apiserver health endpoints. These are

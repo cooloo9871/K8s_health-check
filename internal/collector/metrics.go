@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/brobridge/k8s-health-check/internal/model"
+	"k8s-health-check/internal/model"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )

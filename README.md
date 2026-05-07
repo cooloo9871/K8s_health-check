@@ -34,7 +34,7 @@ docker build -t ghcr.io/you/k8s-healthcheck:latest .
 docker push ghcr.io/you/k8s-healthcheck:latest
 
 # 2. point the manifests at your image
-sed -i 's|ghcr.io/brobridge/k8s-healthcheck:latest|ghcr.io/you/k8s-healthcheck:latest|' deploy/*.yaml
+sed -i 's|ghcr.io/you/k8s-healthcheck:latest|<your-registry>/k8s-healthcheck:latest|' deploy/*.yaml
 
 # 3. run the pod and pull the PDF out in one shot
 ./scripts/run-and-fetch.sh ./k8s-health-report.pdf

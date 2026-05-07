@@ -19,6 +19,32 @@ type Report struct {
 	APIHealth   []APIHealth
 	Certs       []CertInfo
 	Errors      []string
+	Conclusion  Conclusion
+}
+
+// Conclusion holds the advisor-generated summary that is rendered at the
+// top of the PDF.  Populated by internal/advisor.
+type Conclusion struct {
+	Environment     string           // 自動判斷或 --env 指定 (dev/staging/production)
+	EnvironmentAuto bool             // true = 由 cluster 狀態推論，false = 使用者指定
+	OverallStatus   string           // 健康 / 警告 / 嚴重
+	Summary         string           // 一段話總結
+	Findings        []Finding        // 主要發現
+	Recommendations []Recommendation // 建議事項
+}
+
+type Finding struct {
+	Severity string // 嚴重 / 警告 / 資訊
+	Category string // 節點 / Pod / 工作負載 / 儲存 / 控制平面 / 憑證 / 事件
+	Title    string
+	Detail   string
+}
+
+type Recommendation struct {
+	Priority  string // 高 / 中 / 低
+	Category  string
+	Action    string
+	Rationale string
 }
 
 type ClusterInfo struct {
