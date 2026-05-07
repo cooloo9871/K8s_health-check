@@ -12,7 +12,10 @@ COPY . .
 RUN go build -ldflags="-s -w" -o /out/k8s-healthcheck ./
 
 # ---- runtime ---------------------------------------------------------
-FROM gcr.io/distroless/static-debian12:nonroot
+# Using the :debug-nonroot variant so the image ships with busybox
+# (tar, sh, cat, ...). kubectl cp shells into the container and runs
+# `tar cf -`, so the static distroless image cannot be copied out of.
+FROM gcr.io/distroless/base-debian12:debug-nonroot
 
 LABEL org.opencontainers.image.title="k8s-healthcheck" \
       org.opencontainers.image.description="Collects K8s cluster health data and emits a PDF report" \

@@ -103,7 +103,7 @@ spec:
   containers:
     - name: collector
       image: quay.io/cooloo9871/k8s-hk:latest
-      imagePullPolicy: IfNotPresent
+      imagePullPolicy: Always
       args:
         - --out=/reports
         - --timeout=5m
