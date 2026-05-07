@@ -1,0 +1,139 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-healthcheck
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-healthcheck
+  namespace: k8s-healthcheck
+---
+# Read-only access to everything we report on. We use a ClusterRole because
+# we need cluster-scoped objects (nodes, PVs, componentstatuses) and we
+# want to enumerate workloads in every namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-healthcheck-reader
+rules:
+  # Core cluster state
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - namespaces
+      - pods
+      - services
+      - events
+      - persistentvolumes
+      - persistentvolumeclaims
+      - componentstatuses
+      - configmaps
+      - endpoints
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  # Workloads
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  # Storage
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csidrivers", "csinodes"]
+    verbs: ["get", "list"]
+  # Metrics
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  # API health endpoints (/healthz, /livez, /readyz)
+  - nonResourceURLs:
+      - "/healthz"
+      - "/healthz/*"
+      - "/livez"
+      - "/livez/*"
+      - "/readyz"
+      - "/readyz/*"
+      - "/version"
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-healthcheck-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-healthcheck-reader
+subjects:
+  - kind: ServiceAccount
+    name: k8s-healthcheck
+    namespace: k8s-healthcheck
+---
+# Single-shot Pod that runs the collector, writes the PDF into an
+# emptyDir, then sleeps so an operator can `kubectl cp` the file out.
+#
+# Why a Pod (not a Job): we want the container alive AFTER finishing so
+# that `kubectl cp` works. The binary has a --sleep-after flag for this.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-healthcheck
+  namespace: k8s-healthcheck
+  labels:
+    app: k8s-healthcheck
+spec:
+  serviceAccountName: k8s-healthcheck
+  restartPolicy: Never
+  # Tolerate every taint so the pod can land on any node — useful on
+  # clusters where worker nodes are tainted (e.g. control-plane only).
+  tolerations:
+    - operator: Exists
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: collector
+      image: quay.io/cooloo9871/k8s-hk:latest
+      imagePullPolicy: IfNotPresent
+      args:
+        - --out=/reports
+        - --timeout=5m
+        - --pki-dir=/host/etc/kubernetes/pki
+        - --sleep-after=30m
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      volumeMounts:
+        - name: reports
+          mountPath: /reports
+        - name: host-pki
+          mountPath: /host/etc/kubernetes/pki
+          readOnly: true
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+  volumes:
+    - name: reports
+      emptyDir: {}
+    # Optional: lets us read kubeadm certs without elevated perms.
+    # If the path doesn't exist on the node (k3s, EKS, GKE, AKS, ...) the
+    # mount is created empty and the cert collector silently skips.
+    - name: host-pki
+      hostPath:
+        path: /etc/kubernetes/pki
+        type: DirectoryOrCreate

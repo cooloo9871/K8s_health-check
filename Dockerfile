@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.6
-FROM golang:1.22-alpine AS builder
+FROM docker.io/library/golang:1.22-alpine AS builder
 
 ENV CGO_ENABLED=0 GOOS=linux GOFLAGS="-trimpath"
 
