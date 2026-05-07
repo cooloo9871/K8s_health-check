@@ -1,0 +1,60 @@
+---
+# Alternative deployment as a Job. Use this when you want CI-style
+# completion semantics (the Job either succeeds or fails) and you don't
+# need to kubectl cp afterwards (e.g. you mount a real PVC and read the
+# PDF from elsewhere).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k8s-healthcheck
+  namespace: k8s-healthcheck
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    spec:
+      serviceAccountName: k8s-healthcheck
+      restartPolicy: Never
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: collector
+          image: ghcr.io/brobridge/k8s-healthcheck:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --out=/reports
+            - --timeout=5m
+            - --pki-dir=/host/etc/kubernetes/pki
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: reports
+              mountPath: /reports
+            - name: host-pki
+              mountPath: /host/etc/kubernetes/pki
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        # Replace with a PVC if you want to keep reports beyond pod life:
+        #   persistentVolumeClaim:
+        #     claimName: healthcheck-reports
+        - name: reports
+          emptyDir: {}
+        - name: host-pki
+          hostPath:
+            path: /etc/kubernetes/pki
+            type: DirectoryOrCreate

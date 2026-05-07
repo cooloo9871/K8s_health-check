@@ -1,0 +1,75 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-healthcheck
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-healthcheck
+  namespace: k8s-healthcheck
+---
+# Read-only access to everything we report on. We use a ClusterRole because
+# we need cluster-scoped objects (nodes, PVs, componentstatuses) and we
+# want to enumerate workloads in every namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-healthcheck-reader
+rules:
+  # Core cluster state
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - namespaces
+      - pods
+      - services
+      - events
+      - persistentvolumes
+      - persistentvolumeclaims
+      - componentstatuses
+      - configmaps
+      - endpoints
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  # Workloads
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+    verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list"]
+  # Storage
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csidrivers", "csinodes"]
+    verbs: ["get", "list"]
+  # Metrics
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  # API health endpoints (/healthz, /livez, /readyz)
+  - nonResourceURLs:
+      - "/healthz"
+      - "/healthz/*"
+      - "/livez"
+      - "/livez/*"
+      - "/readyz"
+      - "/readyz/*"
+      - "/version"
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-healthcheck-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-healthcheck-reader
+subjects:
+  - kind: ServiceAccount
+    name: k8s-healthcheck
+    namespace: k8s-healthcheck
