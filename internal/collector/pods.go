@@ -9,6 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// collectPods 走訪所有 Pod，產出 PodSummary 統計與 ProblemPods 列表。
+// collector 自身的 Pod 會被排除在所有計數與列表之外，避免報告自我汙染。
 func (c *Collector) collectPods(ctx context.Context, r *model.Report) error {
 	pods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -17,6 +19,10 @@ func (c *Collector) collectPods(ctx context.Context, r *model.Report) error {
 	sum := model.PodSummary{}
 	problems := []model.PodInfo{}
 	for _, p := range pods.Items {
+		// 排除 collector 自己。
+		if c.isSelf(p.Namespace, p.Name) {
+			continue
+		}
 		sum.Total++
 		switch p.Status.Phase {
 		case corev1.PodRunning:
@@ -67,6 +73,9 @@ func (c *Collector) collectPods(ctx context.Context, r *model.Report) error {
 	return nil
 }
 
+// isProblemPod 判斷 Pod 是否進入「問題清單」。涵蓋常見故障模式: 
+// Failed / Pending / Unknown phase、容器未 Ready、重啟次數過高、
+// 以及典型 Waiting reason。
 func isProblemPod(p *corev1.Pod) bool {
 	switch p.Status.Phase {
 	case corev1.PodFailed, corev1.PodPending, corev1.PodUnknown:
@@ -89,6 +98,8 @@ func isProblemPod(p *corev1.Pod) bool {
 	return false
 }
 
+// podProblemReason 萃取 Pod 失敗的最具參考價值的 reason / message。
+// 順序: Pod.Status.Reason > 容器 Waiting > 容器 Terminated > Pod.Conditions。
 func podProblemReason(p *corev1.Pod) (string, string) {
 	if p.Status.Reason != "" {
 		return p.Status.Reason, p.Status.Message

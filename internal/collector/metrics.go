@@ -10,6 +10,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// collectMetrics 是 metrics-server 兩個子收集器的入口。如果 metrics client
+// 在初始化階段就建立失敗 (例如 metrics-server 未安裝)，會直接回錯，由上層
+// 把訊息掛到 Report.Errors 並讓報告區段顯示「不可用」。
 func (c *Collector) collectMetrics(ctx context.Context, r *model.Report) error {
 	if c.metrics == nil {
 		return fmt.Errorf("metrics client unavailable; install metrics-server for resource usage")
@@ -21,6 +24,8 @@ func (c *Collector) collectMetrics(ctx context.Context, r *model.Report) error {
 	return c.collectPodMetrics(ctx, r)
 }
 
+// collectNodeMetrics 抓 metrics.k8s.io 的節點即時 CPU/Memory，搭配節點
+// 容量算出百分比；同時把每個節點上目前的 Pod 數一併附上。
 func (c *Collector) collectNodeMetrics(ctx context.Context, r *model.Report) error {
 	nm, err := c.metrics.MetricsV1beta1().NodeMetricses().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -53,6 +58,9 @@ func (c *Collector) collectNodeMetrics(ctx context.Context, r *model.Report) err
 	podsByNode := map[string]int{}
 	if pods != nil {
 		for _, p := range pods.Items {
+			if c.isSelf(p.Namespace, p.Name) {
+				continue
+			}
 			podsByNode[p.Spec.NodeName]++
 		}
 	}
@@ -87,6 +95,8 @@ func (c *Collector) collectNodeMetrics(ctx context.Context, r *model.Report) err
 	return nil
 }
 
+// collectPodMetrics 抓 metrics.k8s.io 的 Pod 級即時用量，把全 cluster 前 10 名
+// CPU 與前 10 名記憶體挑出來，並排除 collector 自己。
 func (c *Collector) collectPodMetrics(ctx context.Context, r *model.Report) error {
 	pm, err := c.metrics.MetricsV1beta1().PodMetricses("").List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -94,6 +104,10 @@ func (c *Collector) collectPodMetrics(ctx context.Context, r *model.Report) erro
 	}
 	all := make([]model.PodMetric, 0, len(pm.Items))
 	for _, p := range pm.Items {
+		// 排除 collector 自己，避免出現在 Top CPU / Top Memory。
+		if c.isSelf(p.Namespace, p.Name) {
+			continue
+		}
 		var cpuMilli int64
 		var memBytes int64
 		for _, ctr := range p.Containers {
@@ -124,6 +138,7 @@ func (c *Collector) collectPodMetrics(ctx context.Context, r *model.Report) erro
 	return nil
 }
 
+// humanBytes 把 bytes 轉成 KiB/MiB/GiB 的人類可讀字串。
 func humanBytes(b int64) string {
 	const (
 		KiB = 1024

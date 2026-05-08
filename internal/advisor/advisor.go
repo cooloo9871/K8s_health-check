@@ -1,8 +1,6 @@
-// Package advisor inspects a populated *model.Report and produces a
-// human-readable conclusion (overall status, key findings, prioritized
-// recommendations).  Rules are intentionally conservative — we'd rather
-// flag a benign issue than miss a real one.  Output is in Traditional
-// Chinese.
+// Package advisor 檢視已填好的 *model.Report，產出人類可讀的結論
+// (整體狀態、主要發現、依優先級排序的建議事項)。
+// 規則刻意偏保守: 寧可誤報也不漏報。輸出統一使用繁體中文。
 package advisor
 
 import (
@@ -30,8 +28,8 @@ const (
 	EnvProd    = "production"
 )
 
-// Analyze fills r.Conclusion based on the rest of r.
-//   - envOverride: 使用者透過 --env 指定的環境，空字串表示自動推論
+// Analyze 依據 r 其他欄位的內容填入 r.Conclusion。
+//   - envOverride: 使用者透過 --env 指定的環境，空字串表示自動推論。
 func Analyze(r *model.Report, envOverride string) {
 	env, auto := resolveEnv(r, envOverride)
 	c := model.Conclusion{
@@ -48,15 +46,16 @@ func Analyze(r *model.Report, envOverride string) {
 	checkEvents(r, env, &c)
 	checkMetrics(r, env, &c)
 	checkDistribution(r, env, &c)
+	checkNodeAgents(r, env, &c)
 
 	c.OverallStatus = rollupStatus(c.Findings)
 	c.Summary = buildSummary(r, &c)
 	r.Conclusion = c
 }
 
-// resolveEnv chooses the environment label.
-//   - 若 envOverride 非空，直接使用 (auto=false)
-//   - 否則用 cluster 規模 + distribution 推論 (auto=true)
+// resolveEnv 決定要使用的環境標籤。
+//   - envOverride 非空時直接套用，並回 auto=false。
+//   - 否則依 cluster 規模 + Distribution 推論，回 auto=true。
 func resolveEnv(r *model.Report, override string) (string, bool) {
 	if v := strings.ToLower(strings.TrimSpace(override)); v != "" && v != "auto" {
 		switch v {
@@ -209,7 +208,7 @@ func checkPods(r *model.Report, env string, c *model.Conclusion) {
 		if imgPull > 0 {
 			addFinding(c, SeverityWarning, "Pod",
 				fmt.Sprintf("ImagePullBackOff / ErrImagePull Pod 共 %d 個", imgPull),
-				"映像檔取得失敗：可能是 tag 錯誤、registry 認證失效或網路無法到達。")
+				"映像檔取得失敗: 可能是 tag 錯誤、registry 認證失效或網路無法到達。")
 			addRec(c, env, SeverityWarning, "Pod",
 				"確認 image 名稱、tag、imagePullSecrets 與節點對 registry 的連線",
 				"建議在 CI/CD 加入推送後 smoke test，避免此類部署失敗。")
@@ -458,17 +457,17 @@ func buildSummary(r *model.Report, c *model.Conclusion) string {
 	}
 	switch c.OverallStatus {
 	case StatusCritical:
-		return fmt.Sprintf("叢集整體狀態：%s。環境設定：%s（%s）。本次掃描共發現 %d 項嚴重、%d 項警告、%d 項資訊。請優先處理嚴重項目。",
+		return fmt.Sprintf("叢集整體狀態: %s。環境設定: %s（%s）。本次掃描共發現 %d 項嚴重、%d 項警告、%d 項資訊。請優先處理嚴重項目。",
 			c.OverallStatus, c.Environment, envSrc, crit, warn, info)
 	case StatusWarning:
-		return fmt.Sprintf("叢集整體狀態：%s。環境設定：%s（%s）。本次掃描共發現 %d 項警告、%d 項資訊。建議於下次維護視窗排除。",
+		return fmt.Sprintf("叢集整體狀態: %s。環境設定: %s（%s）。本次掃描共發現 %d 項警告、%d 項資訊。建議於下次維護視窗排除。",
 			c.OverallStatus, c.Environment, envSrc, warn, info)
 	default:
 		if info > 0 {
-			return fmt.Sprintf("叢集整體狀態：%s。環境設定：%s（%s）。本次掃描未偵測到嚴重或警告問題，僅 %d 項資訊性提醒。",
+			return fmt.Sprintf("叢集整體狀態: %s。環境設定: %s（%s）。本次掃描未偵測到嚴重或警告問題，僅 %d 項資訊性提醒。",
 				c.OverallStatus, c.Environment, envSrc, info)
 		}
-		return fmt.Sprintf("叢集整體狀態：%s。環境設定：%s（%s）。本次掃描未偵測到任何問題。",
+		return fmt.Sprintf("叢集整體狀態: %s。環境設定: %s（%s）。本次掃描未偵測到任何問題。",
 			c.OverallStatus, c.Environment, envSrc)
 	}
 }
@@ -486,4 +485,46 @@ func addRec(c *model.Conclusion, env, sev, cat, action, rationale string) {
 		Action:    action,
 		Rationale: rationale,
 	})
+}
+
+// checkNodeAgents 處理 DaemonSet agent 回傳的 per-node 資料: 主要是節點磁碟
+// 使用率。控制平面憑證已在 checkCerts 統一處理，這裡不重複。
+func checkNodeAgents(r *model.Report, env string, c *model.Conclusion) {
+	if len(r.NodeAgents) == 0 {
+		// agent 模式未啟用是常見情況，不告警，僅在 dev / staging 也不提示
+		// 以免雜訊。production 環境特別建議部署，給個 info。
+		if env == EnvProd && r.Cluster.NodeCount > 1 {
+			addFinding(c, SeverityInfo, "監控",
+				"未部署 DaemonSet agent，無法取得每節點磁碟與 kubelet 憑證資料",
+				"在生產環境建議部署 deploy/all-in-one.yaml 中的 agent DaemonSet 以涵蓋每個節點。")
+		}
+		return
+	}
+	critNodes := map[string]bool{}
+	warnNodes := map[string]bool{}
+	for _, na := range r.NodeAgents {
+		for _, d := range na.Disks {
+			switch d.Status {
+			case "CRITICAL":
+				critNodes[na.NodeName] = true
+			case "WARN":
+				warnNodes[na.NodeName] = true
+			}
+		}
+	}
+	if len(critNodes) > 0 {
+		addFinding(c, SeverityCritical, "節點磁碟",
+			fmt.Sprintf("%d 個節點有掛點使用率 ≥ 90%%", len(critNodes)),
+			"磁碟接近爆滿會觸發 kubelet 驅逐 (DiskPressure)，影響其上 Pod。")
+		addRec(c, env, SeverityCritical, "節點磁碟",
+			"在受影響節點清理 image / 容器層、log，必要時擴容磁碟",
+			"可從報告中『節點磁碟使用率』表找出具體掛點。")
+	} else if len(warnNodes) > 0 {
+		addFinding(c, SeverityWarning, "節點磁碟",
+			fmt.Sprintf("%d 個節點有掛點使用率 ≥ 80%%", len(warnNodes)),
+			"建議排程清理或擴容，避免進入 DiskPressure。")
+		addRec(c, env, SeverityWarning, "節點磁碟",
+			"執行 crictl rmi --prune 或 docker system prune 清理閒置 image",
+			"並檢查 /var/log 是否被某個 Pod 寫爆。")
+	}
 }

@@ -8,13 +8,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// collectComponents pulls /componentstatuses.  This API is deprecated since
-// 1.19 and disabled on some managed distributions; if the call fails we
-// simply skip the section without erroring out.
+// collectComponents 嘗試讀取 /componentstatuses。此 API 自 1.19 起已 deprecated，
+// 部分 managed K8s 也會關閉，因此呼叫失敗時靜默略過、不視為錯誤。
 func (c *Collector) collectComponents(ctx context.Context, r *model.Report) error {
 	cs, err := c.clientset.CoreV1().ComponentStatuses().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		// not fatal — many clusters disable this endpoint
+		// 不少 cluster 已停用此端點，視為正常情況。
 		return nil
 	}
 	out := make([]model.ComponentStatus, 0, len(cs.Items))

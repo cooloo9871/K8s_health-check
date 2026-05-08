@@ -9,6 +9,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// collectStorage 收集 PV / PVC / StorageClass 三類儲存資源的統計，
+// 並把 Pending 的 PVC 額外列在 ProblemPVCs 給報告呈現。
 func (c *Collector) collectStorage(ctx context.Context, r *model.Report) error {
 	s := model.StorageSummary{}
 

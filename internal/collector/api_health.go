@@ -7,9 +7,8 @@ import (
 	"k8s-health-check/internal/model"
 )
 
-// collectAPIHealth probes the kube-apiserver health endpoints. These are
-// reliable on every K8s distribution and replace the deprecated
-// componentstatuses API.
+// collectAPIHealth 探測 kube-apiserver 的 /healthz, /livez, /readyz 端點。
+// 這些端點在所有 K8s 發行版上都可靠，可以取代已 deprecated 的 componentstatuses API。
 func (c *Collector) collectAPIHealth(ctx context.Context, r *model.Report) error {
 	endpoints := []string{"/healthz", "/livez", "/readyz"}
 	rt := c.clientset.Discovery().RESTClient()
@@ -25,7 +24,7 @@ func (c *Collector) collectAPIHealth(ctx context.Context, r *model.Report) error
 		}
 		body := string(raw)
 		entry.Status = "Healthy"
-		// each line is "[+]check ok" or "[-]check failed"; surface failures
+		// 每一行格式為 "[+]check ok" 或 "[-]check failed"，把失敗的檢查項目蒐集起來
 		var failed []string
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "[-]") {

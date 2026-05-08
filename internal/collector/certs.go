@@ -15,10 +15,9 @@ import (
 	"k8s-health-check/internal/model"
 )
 
-// collectCerts walks the kubeadm-style PKI directory (when mounted via
-// hostPath) and decodes every *.crt / *.pem it finds.  On distributions
-// that don't expose /etc/kubernetes/pki (k3s, managed clouds, etc.) the
-// directory simply won't exist and we exit cleanly.
+// collectCerts 走訪 kubeadm 風格的 PKI 目錄 (透過 hostPath 掛入)，
+// 解析所有 *.crt / *.pem。在不暴露 /etc/kubernetes/pki 的發行版
+// (k3s、各家 managed cloud) 上，目錄不存在會直接清爽地略過此區段。
 func (c *Collector) collectCerts(ctx context.Context, r *model.Report) error {
 	if c.pkiDir == "" {
 		return nil
@@ -30,7 +29,7 @@ func (c *Collector) collectCerts(ctx context.Context, r *model.Report) error {
 	out := []model.CertInfo{}
 	walkErr := filepath.WalkDir(c.pkiDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable paths instead of failing the whole collector
+			return nil // 無法讀取的路徑直接略過，不要中斷整個 collector
 		}
 		if d.IsDir() {
 			return nil

@@ -11,17 +11,22 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// collectNodes 收集所有節點的基本資訊與條件，並先預先計算每個節點上的
+// Pod 數量塞進 NodeInfo.PodCount，避免後續每張表都重抓一次 Pod 清單。
 func (c *Collector) collectNodes(ctx context.Context, r *model.Report) error {
 	nodes, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
-	// pre-count pods per node so the table shows distribution
+	// 預先依節點分桶 Pod 數量，且要扣除 collector 自身。
 	pods, _ := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	podsByNode := map[string]int{}
 	if pods != nil {
 		for _, p := range pods.Items {
+			if c.isSelf(p.Namespace, p.Name) {
+				continue
+			}
 			podsByNode[p.Spec.NodeName]++
 		}
 	}
@@ -57,6 +62,8 @@ func (c *Collector) collectNodes(ctx context.Context, r *model.Report) error {
 	return nil
 }
 
+// nodeRoles 從 node-role.kubernetes.io/<role> 標籤萃取所有角色名稱，
+// 沒有任何 role 標籤時回 "<none>"。
 func nodeRoles(n *corev1.Node) string {
 	roles := []string{}
 	for k := range n.Labels {
@@ -76,6 +83,8 @@ func nodeRoles(n *corev1.Node) string {
 	return strings.Join(roles, ",")
 }
 
+// nodeStatus 把 NodeReady 條件轉成 kubectl get nodes 風格的字串，
+// 並會疊加上 SchedulingDisabled (對應 cordon 狀態)。
 func nodeStatus(n *corev1.Node) string {
 	for _, c := range n.Status.Conditions {
 		if c.Type == corev1.NodeReady {
@@ -91,6 +100,7 @@ func nodeStatus(n *corev1.Node) string {
 	return "Unknown"
 }
 
+// internalIP 回傳節點第一個 InternalIP；若沒有則回空字串。
 func internalIP(n *corev1.Node) string {
 	for _, a := range n.Status.Addresses {
 		if a.Type == corev1.NodeInternalIP {
@@ -100,6 +110,7 @@ func internalIP(n *corev1.Node) string {
 	return ""
 }
 
+// humanAge 以人類可讀格式呈現 Pod / 節點的存活時間，仿造 kubectl 風格。
 func humanAge(t time.Time) string {
 	d := time.Since(t)
 	switch {

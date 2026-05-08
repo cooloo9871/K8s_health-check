@@ -1,8 +1,11 @@
+// Package model 定義 collector 與 report 之間共享的純資料型別。
+// 這個套件刻意不引入 k8s.io/* 之類的 client 相依，確保 report 端可以
+// 獨立被測試。
 package model
 
 import "time"
 
-// Report is the full data set rendered by the PDF generator.
+// Report 是 PDF 產生器所需的完整資料集。所有區段資料都掛在這個結構上。
 type Report struct {
 	GeneratedAt time.Time
 	Cluster     ClusterInfo
@@ -17,13 +20,16 @@ type Report struct {
 	Events      []EventInfo
 	Components  []ComponentStatus
 	APIHealth   []APIHealth
-	Certs       []CertInfo
-	Errors      []string
-	Conclusion  Conclusion
+	// Certs 為彙整後的憑證清單 (含 K8s pki、kubelet、etcd)。Source 欄位區分來源。
+	Certs []CertInfo
+	// NodeAgents 為各節點 DaemonSet agent 回報的本機資料 (磁碟、kubelet 憑證等)。
+	NodeAgents []NodeAgentData
+	Errors     []string
+	Conclusion Conclusion
 }
 
-// Conclusion holds the advisor-generated summary that is rendered at the
-// top of the PDF.  Populated by internal/advisor.
+// Conclusion 存放由 advisor 產生的摘要結論，會渲染在 PDF 最前面的章節。
+// 由 internal/advisor 套件填值。
 type Conclusion struct {
 	Environment     string           // 自動判斷或 --env 指定 (dev/staging/production)
 	EnvironmentAuto bool             // true = 由 cluster 狀態推論，false = 使用者指定
@@ -188,10 +194,35 @@ type APIHealth struct {
 	Detail   string
 }
 
+// CertInfo 為單張憑證的彙總資料。
+//   - Source 欄位區分來源類別: "k8s-pki" / "kubelet" / "etcd" / "kubeconfig" 等
+//   - Node 欄位代表這張憑證從哪個節點上採到 (DaemonSet 模式才會有意義)
 type CertInfo struct {
 	Path     string
 	Subject  string
 	NotAfter time.Time
 	DaysLeft int
 	Status   string
+	Source   string
+	Node     string
+}
+
+// NodeAgentData 是 DaemonSet 端 agent 回傳給 aggregator 的單一節點資料。
+type NodeAgentData struct {
+	NodeName    string
+	CollectedAt time.Time
+	Disks       []DiskInfo
+	Certs       []CertInfo // kubelet + (若該節點是 control-plane) k8s pki 全部憑證
+	Errors      []string
+}
+
+// DiskInfo 描述節點上單一掛點的容量資訊。
+type DiskInfo struct {
+	MountPoint string  // 例如 "/", "/var/lib/kubelet"
+	Filesystem string  // 例如 "ext4", "xfs", "overlay"
+	Total      uint64  // bytes
+	Used       uint64  // bytes
+	Avail      uint64  // bytes
+	Percent    float64 // 0~100
+	Status     string  // OK / WARN / CRITICAL
 }

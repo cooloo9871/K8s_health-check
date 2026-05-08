@@ -11,6 +11,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// collectWorkloads 收集 Deployments / DaemonSets / StatefulSets / ReplicaSets /
+// Jobs / CronJobs 的總數與健康狀態，把 Desired vs Ready 不一致的個案塞進
+// Unhealthy 列表給結論章節後續評估。
 func (c *Collector) collectWorkloads(ctx context.Context, r *model.Report) error {
 	w := model.WorkloadSummary{}
 	issues := []model.WorkloadIssue{}
@@ -133,6 +136,8 @@ func (c *Collector) collectWorkloads(ctx context.Context, r *model.Report) error
 	return nil
 }
 
+// deploymentReason 從 Deployment Conditions 萃取最具參考價值的 reason
+// 字串，優先回傳 ConditionFalse 的，再退回 Progressing。
 func deploymentReason(conds []appsv1.DeploymentCondition) string {
 	for _, c := range conds {
 		if c.Status == corev1.ConditionFalse && c.Reason != "" {

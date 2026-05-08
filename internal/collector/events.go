@@ -11,6 +11,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+// collectEvents 抓全 cluster 非 Normal 的事件 (Warning / 其他類型)，
+// 依 LastSeen 由新到舊排序後最多保留 50 筆。collector 自身的 Pod 事件會被排除。
 func (c *Collector) collectEvents(ctx context.Context, r *model.Report) error {
 	evs, err := c.clientset.CoreV1().Events("").List(ctx, metav1.ListOptions{
 		FieldSelector: "type!=Normal",
@@ -21,6 +23,10 @@ func (c *Collector) collectEvents(ctx context.Context, r *model.Report) error {
 	}
 	out := make([]model.EventInfo, 0, len(evs.Items))
 	for _, e := range evs.Items {
+		// 排除針對 collector 自身的事件 (Pod 類型才有可比較的 Namespace + Name)。
+		if e.InvolvedObject.Kind == "Pod" && c.isSelf(e.InvolvedObject.Namespace, e.InvolvedObject.Name) {
+			continue
+		}
 		out = append(out, model.EventInfo{
 			LastSeen:  lastSeen(e),
 			Type:      e.Type,
@@ -39,6 +45,8 @@ func (c *Collector) collectEvents(ctx context.Context, r *model.Report) error {
 	return nil
 }
 
+// lastSeen 取得事件最新時間戳。優先順序為 LastTimestamp、EventTime、CreationTimestamp，
+// 因為新版 events.k8s.io 不再填 LastTimestamp。
 func lastSeen(e corev1.Event) time.Time {
 	if !e.LastTimestamp.IsZero() {
 		return e.LastTimestamp.Time

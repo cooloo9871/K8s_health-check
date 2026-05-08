@@ -1,3 +1,27 @@
+# ============================================================================
+# k8s-healthcheck: 完整部署 (DaemonSet agent + Deployment aggregator + RBAC)
+#
+# 架構:
+#   - agent  : 以 DaemonSet 部署於每個節點，提供 :8080/data HTTP 端點，
+#              回傳該節點的磁碟、kubelet 憑證、k8s pki 憑證。
+#   - aggregator: 以 Deployment 部署 (1 副本)，從 cluster API 抓全 cluster
+#                 資料，並透過 Pod 列舉拉取每個 agent 的 /data，整合後
+#                 寫出繁體中文 PDF。
+#
+# 用法:
+#   kubectl apply -f deploy/all-in-one.yaml
+#
+#   # 等 agent 就緒
+#   kubectl -n k8s-healthcheck rollout status ds/k8s-healthcheck-agent
+#
+#   # 觀察 aggregator 產出
+#   kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck-aggregator -f
+#
+#   # 把 PDF 拉下來
+#   POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-aggregator -o jsonpath='{.items[0].metadata.name}')
+#   kubectl -n k8s-healthcheck cp "${POD}:/reports" ./reports
+# ============================================================================
+
 ---
 apiVersion: v1
 kind: Namespace
@@ -10,15 +34,14 @@ metadata:
   name: k8s-healthcheck
   namespace: k8s-healthcheck
 ---
-# Read-only access to everything we report on. We use a ClusterRole because
-# we need cluster-scoped objects (nodes, PVs, componentstatuses) and we
-# want to enumerate workloads in every namespace.
+# 因為要列舉跨 namespace 的資源 (nodes, PVs, all-namespace pods, ...) 故用
+# ClusterRole。aggregator 需要讀本 namespace 的 Pod 才能找到 agent。
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: k8s-healthcheck-reader
 rules:
-  # Core cluster state
+  # 核心叢集狀態
   - apiGroups: [""]
     resources:
       - nodes
@@ -35,22 +58,22 @@ rules:
   - apiGroups: [""]
     resources: ["nodes/proxy"]
     verbs: ["get"]
-  # Workloads
+  # 工作負載
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
     verbs: ["get", "list"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
     verbs: ["get", "list"]
-  # Storage
+  # 儲存
   - apiGroups: ["storage.k8s.io"]
     resources: ["storageclasses", "csidrivers", "csinodes"]
     verbs: ["get", "list"]
-  # Metrics
+  # 度量
   - apiGroups: ["metrics.k8s.io"]
     resources: ["nodes", "pods"]
     verbs: ["get", "list"]
-  # API health endpoints (/healthz, /livez, /readyz)
+  # API health endpoints
   - nonResourceURLs:
       - "/healthz"
       - "/healthz/*"
@@ -73,67 +96,195 @@ subjects:
   - kind: ServiceAccount
     name: k8s-healthcheck
     namespace: k8s-healthcheck
+
+# ----------------------------------------------------------------------------
+# DaemonSet: 在每個節點上跑一個 agent，採磁碟 + 各類憑證
+# ----------------------------------------------------------------------------
 ---
-# Single-shot Pod that runs the collector, writes the PDF into an
-# emptyDir, then sleeps so an operator can `kubectl cp` the file out.
-#
-# Why a Pod (not a Job): we want the container alive AFTER finishing so
-# that `kubectl cp` works. The binary has a --sleep-after flag for this.
-apiVersion: v1
-kind: Pod
+apiVersion: apps/v1
+kind: DaemonSet
 metadata:
-  name: k8s-healthcheck
+  name: k8s-healthcheck-agent
   namespace: k8s-healthcheck
   labels:
-    app: k8s-healthcheck
+    app: k8s-healthcheck-agent
 spec:
-  serviceAccountName: k8s-healthcheck
-  restartPolicy: Never
-  # Tolerate every taint so the pod can land on any node — useful on
-  # clusters where worker nodes are tainted (e.g. control-plane only).
-  tolerations:
-    - operator: Exists
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 65532
-    runAsGroup: 65532
-    fsGroup: 65532
-    seccompProfile:
-      type: RuntimeDefault
-  containers:
-    - name: collector
-      image: quay.io/cooloo9871/k8s-hk:latest
-      imagePullPolicy: Always
-      args:
-        - --out=/reports
-        - --timeout=5m
-        - --pki-dir=/host/etc/kubernetes/pki
-        - --sleep-after=30m
-      resources:
-        requests:
-          cpu: 50m
-          memory: 64Mi
-        limits:
-          cpu: 500m
-          memory: 256Mi
-      volumeMounts:
-        - name: reports
-          mountPath: /reports
-        - name: host-pki
-          mountPath: /host/etc/kubernetes/pki
-          readOnly: true
+  selector:
+    matchLabels:
+      app: k8s-healthcheck-agent
+  template:
+    metadata:
+      labels:
+        app: k8s-healthcheck-agent
+    spec:
+      serviceAccountName: k8s-healthcheck
+      # 容忍所有 taint，讓 agent 能落到包含 control-plane 在內的所有節點。
+      tolerations:
+        - operator: Exists
+      # 不啟用 hostNetwork: 維持 Pod 自有 IP 以便 aggregator HTTP 連線。
       securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        capabilities:
-          drop: ["ALL"]
-  volumes:
-    - name: reports
-      emptyDir: {}
-    # Optional: lets us read kubeadm certs without elevated perms.
-    # If the path doesn't exist on the node (k3s, EKS, GKE, AKS, ...) the
-    # mount is created empty and the cert collector silently skips.
-    - name: host-pki
-      hostPath:
-        path: /etc/kubernetes/pki
-        type: DirectoryOrCreate
+        # agent 需要讀 /etc/kubernetes/pki 與 /var/lib/kubelet/pki 內 0600
+        # 權限的私鑰配對檔，最簡單的做法是用 UID 0；同時 drop 所有 cap、
+        # 啟用 readOnlyRootFilesystem，確保不會因此擴大攻擊面。
+        runAsUser: 0
+        runAsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent
+          image: quay.io/cooloo9871/k8s-hk:latest
+          imagePullPolicy: Always
+          args:
+            - --mode=agent
+            - --listen=:8080
+            - --host-prefix=/host
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 48Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            # 整顆 host root 唯讀掛入 /host，agent 會自己挑要看的檔案/掛點。
+            - name: host-root
+              mountPath: /host
+              readOnly: true
+              mountPropagation: HostToContainer
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+
+# ----------------------------------------------------------------------------
+# Service: 給 agent DaemonSet 一個內部 ClusterIP (headless)，方便除錯。
+# 實際 aggregator 是用 API server 列 Pod + Pod IP 直連，不依賴此 Service。
+# ----------------------------------------------------------------------------
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-healthcheck-agent
+  namespace: k8s-healthcheck
+  labels:
+    app: k8s-healthcheck-agent
+spec:
+  clusterIP: None
+  selector:
+    app: k8s-healthcheck-agent
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+
+# ----------------------------------------------------------------------------
+# Deployment: aggregator (1 副本)。Pod 跑完 PDF 後 sleep-after，期間可讓
+# 操作員 kubectl cp 取出 PDF；之後容器 exit 並由 Deployment 重新啟動，
+# 即等於每隔 sleep-after 自動產出新報告。
+# ----------------------------------------------------------------------------
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-healthcheck-aggregator
+  namespace: k8s-healthcheck
+  labels:
+    app: k8s-healthcheck-aggregator
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: k8s-healthcheck-aggregator
+  template:
+    metadata:
+      labels:
+        app: k8s-healthcheck-aggregator
+    spec:
+      serviceAccountName: k8s-healthcheck
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: aggregator
+          image: quay.io/cooloo9871/k8s-hk:latest
+          imagePullPolicy: Always
+          args:
+            - --mode=aggregator
+            - --out=/reports
+            - --timeout=5m
+            - --sleep-after=30m
+            - --agent-namespace=k8s-healthcheck
+            - --agent-selector=app=k8s-healthcheck-agent
+            - --agent-port=8080
+            # --env=auto: 依 cluster 規模/distribution 自動推論
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+          volumeMounts:
+            - name: reports
+              mountPath: /reports
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: reports
+          emptyDir: {}
