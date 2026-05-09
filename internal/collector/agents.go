@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -154,10 +155,15 @@ func fetchAgent(ctx context.Context, httpClient *http.Client, podIP, port string
 // mergeAgentCerts 把所有 agent 採到的憑證 union 進 Report.Certs，並依
 // (Path, Subject, Node) 去重。aggregator 自己 walk pkiDir 採到的憑證會被
 // 保留，但通常 agent 模式下 pkiDir 不會掛載，所以不會有重複。
+//
+// 路徑防呆: 若收到的 cert.Path 仍帶有 /host 之類的容器視角前綴 (例如使用者
+// 還在跑舊版 agent image), 在這裡再做一次 normalize, 確保 PDF 上不會出現
+// /host. agent 端已經會 strip, 這層只是 belt-and-suspenders.
 func mergeAgentCerts(r *model.Report) {
 	seen := map[string]bool{}
 	merged := make([]model.CertInfo, 0, len(r.Certs))
 	add := func(c model.CertInfo) {
+		c.Path = normalizeCertPath(c.Path)
 		key := c.Path + "|" + c.Subject + "|" + c.Node
 		if seen[key] {
 			return
@@ -191,4 +197,24 @@ func mergeAgentCerts(r *model.Report) {
 		return merged[i].Path < merged[j].Path
 	})
 	r.Certs = merged
+}
+
+// normalizeCertPath 防呆: 把容器視角的 host 前綴拿掉, 僅留節點上的真實絕對
+// 路徑. agent 端已經會 strip, 這層保險是為了應付舊版 agent image 還在跑的
+// 情況 — 即使 agent 回傳 "/host/etc/kubernetes/pki/x.crt", PDF 仍會顯示
+// "/etc/kubernetes/pki/x.crt".
+//
+// 規則:
+//   - "/host" 或 "/host/" 結尾: 截掉 (回 "/")
+//   - "/host/<rest>": 截為 "/<rest>"
+//   - 其他無關路徑: 不動 (避免誤切使用者自訂路徑)
+func normalizeCertPath(p string) string {
+	const hostPrefix = "/host"
+	if p == hostPrefix || p == hostPrefix+"/" {
+		return "/"
+	}
+	if strings.HasPrefix(p, hostPrefix+"/") {
+		return p[len(hostPrefix):]
+	}
+	return p
 }

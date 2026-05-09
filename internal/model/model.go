@@ -13,6 +13,9 @@ type Report struct {
 	NodeMetrics []NodeMetric
 	PodSummary  PodSummary
 	ProblemPods []PodInfo
+	// AllPods 為全部 (非 collector 自身) Pod 的詳細清單, 含 IP / 節點 /
+	// HostPath 掛載資訊, 用於"Pod 總覽"章節。
+	AllPods []PodOverview
 	TopCPU      []PodMetric
 	TopMemory   []PodMetric
 	Workloads   WorkloadSummary
@@ -39,7 +42,7 @@ type Conclusion struct {
 
 type Finding struct {
 	Severity string // 嚴重 / 警告 / 資訊
-	Category string // 節點 / Pod / 工作負載 / 儲存 / 控制平面 / 憑證 / 事件
+	Category string // 節點 / Pod / 工作負載 / 儲存 / Control-plane / 憑證 / 事件
 	Title    string
 	Detail   string
 }
@@ -112,12 +115,45 @@ type PodSummary struct {
 type PodInfo struct {
 	Namespace string
 	Name      string
+	// Status 為顯示用的有效狀態 (例如 CrashLoopBackOff / OOMKilled),
+	// 由 collector 端的 effectivePhase 計算; 與 Phase 不一定相同。
+	Status string
+	// Phase 為 K8s 原始 Pod.Status.Phase 字串 (Running / Pending / Failed
+	// / Succeeded / Unknown). 用於儀表板等需依 raw phase 分桶的地方;
+	// 一般顯示請用 Status。
+	Phase    string
+	Restarts int32
+	Node     string
+	Age      string
+	Reason   string
+	Message  string
+}
+
+// PodOverview 為單一 Pod 的詳細資訊, 用於 Pod 總覽章節。
+//   - PodIP: Pod 在 cluster 網路上的 IP (尚未取得時為空字串)
+//   - Node:  Pod 被排程的 worker 節點名稱
+//   - HostPaths: 該 Pod 使用的 hostPath volume 清單 (空 slice 表示沒掛 hostPath)
+type PodOverview struct {
+	Namespace string
+	Name      string
 	Status    string
-	Restarts  int32
+	PodIP     string
 	Node      string
-	Age       string
-	Reason    string
-	Message   string
+	HostPaths []HostPathMount
+}
+
+// HostPathMount 描述一個 hostPath volume 的掛載細節。
+//   - VolumeName: Pod spec 內 volumes[].name
+//   - HostPath:   宿主機本地實際路徑 (例如 /var/log)
+//   - MountPath:  在容器內被掛到哪個路徑 (取首個使用該 volume 的 container)
+//   - Container:  上述 MountPath 所屬的 container 名 (供使用者定位)
+//   - ReadOnly:   container 端是否唯讀掛載
+type HostPathMount struct {
+	VolumeName string
+	HostPath   string
+	MountPath  string
+	Container  string
+	ReadOnly   bool
 }
 
 type PodMetric struct {

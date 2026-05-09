@@ -106,7 +106,7 @@ func (c *Collector) EnsureAgentDaemonSet(ctx context.Context, o AgentOrchestrati
 		log.Printf("orchestrate: 已建立 DaemonSet %s/%s (image=%s)", ns, created.Name, o.Image)
 	case k8serrors.IsAlreadyExists(err):
 		// 通常代表前一輪掃描異常結束未刪乾淨。直接沿用; 等 Ready 即可。
-		log.Printf("orchestrate: DaemonSet %s/%s 已存在，沿用既有資源", ns, o.Name)
+		log.Printf("orchestrate: DaemonSet %s/%s 已存在, 沿用既有資源", ns, o.Name)
 	default:
 		return fmt.Errorf("create DaemonSet: %w", err)
 	}
@@ -114,37 +114,103 @@ func (c *Collector) EnsureAgentDaemonSet(ctx context.Context, o AgentOrchestrati
 	return c.waitAgentDaemonSetReady(ctx, ns, o)
 }
 
-// waitAgentDaemonSetReady 輪詢 DS 直到 NumberReady == DesiredNumberScheduled
-// (且 DesiredNumberScheduled > 0) 或 ReadyTimeout 屆滿。
+// waitAgentDaemonSetReady 輪詢 DS 直到「Ready 節點上的 agent 全部 Ready」
+// 或 ReadyTimeout 屆滿。
+//
+// 行為:
+//   - 每次輪詢同時檢查節點 Ready 狀態。NotReady 節點上的 agent 永遠不會 Ready
+//     (節點本身就無法跑 Pod), 所以等待目標改為 NumberReady >= ReadyNodeCount
+//     (而非 DesiredNumberScheduled). 這讓「有節點 NotReady 的 cluster」不必
+//     白等到逾時就能繼續走完報告.
+//   - 真的逾時時, 若至少有 1 個 agent Ready 就改採 best-effort 路徑: log 警告
+//     後 return nil, 讓 aggregator 繼續產報告 (沒回報的節點會在 advisor
+//     checkNodeAgents 中被列出來). 只有「零 agent Ready」才視為硬錯誤.
 func (c *Collector) waitAgentDaemonSetReady(ctx context.Context, ns string, o AgentOrchestration) error {
 	deadline := time.Now().Add(o.ReadyTimeout)
 	pollInterval := 2 * time.Second
 	lastDesired := int32(-1)
 	lastReady := int32(-1)
+	lastReadyNodes := int32(-1)
+
+	var lastDS *appsv1.DaemonSet
 	for {
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("等待 DaemonSet Ready 被取消: %w", ctx.Err())
 		default:
 		}
+
+		readyNodes, notReadyNames := c.countReadyNodes(ctx)
+
 		cur, err := c.clientset.AppsV1().DaemonSets(ns).Get(ctx, o.Name, metav1.GetOptions{})
 		if err == nil {
+			lastDS = cur
 			d := cur.Status.DesiredNumberScheduled
 			r := cur.Status.NumberReady
-			if d != lastDesired || r != lastReady {
-				log.Printf("orchestrate: DS %s/%s 進度 %d/%d Ready", ns, o.Name, r, d)
-				lastDesired, lastReady = d, r
+			if d != lastDesired || r != lastReady || readyNodes != lastReadyNodes {
+				if len(notReadyNames) > 0 {
+					log.Printf("orchestrate: DS %s/%s 進度 %d/%d Ready (節點 %d Ready, NotReady: %s)",
+						ns, o.Name, r, d, readyNodes, strings.Join(notReadyNames, ","))
+				} else {
+					log.Printf("orchestrate: DS %s/%s 進度 %d/%d Ready", ns, o.Name, r, d)
+				}
+				lastDesired, lastReady, lastReadyNodes = d, r, readyNodes
 			}
-			if d > 0 && r >= d {
+			// 期望 Ready 數 = min(DesiredNumberScheduled, ReadyNodeCount).
+			// readyNodes 取不到 (List 失敗) 時保守起見退回原本判斷.
+			expected := d
+			if readyNodes >= 0 && readyNodes < d {
+				expected = readyNodes
+			}
+			if expected > 0 && r >= expected {
+				if r < d {
+					log.Printf("orchestrate: %d/%d agent Ready, 略過 NotReady 節點 (%s) 直接進入收集階段",
+						r, d, strings.Join(notReadyNames, ","))
+				}
 				return nil
 			}
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("等待 DaemonSet %s/%s 全部 Ready 逾時 (%s, 最後 %d/%d)",
+			if lastDS != nil && lastDS.Status.NumberReady > 0 {
+				log.Printf("orchestrate: 等待逾時 (%s), 但 %d/%d agent 已 Ready, 改 best-effort 繼續產生報告; 漏報節點: %s",
+					o.ReadyTimeout, lastDS.Status.NumberReady, lastDS.Status.DesiredNumberScheduled,
+					strings.Join(notReadyNames, ","))
+				return nil
+			}
+			return fmt.Errorf("等待 DaemonSet %s/%s Ready 逾時且零 agent Ready (%s, 最後 %d/%d)",
 				ns, o.Name, o.ReadyTimeout, lastReady, lastDesired)
 		}
 		time.Sleep(pollInterval)
 	}
+}
+
+// countReadyNodes 列出 cluster 全部節點, 回傳 (Ready 節點數, NotReady 節點名清單).
+// List 失敗時回 (-1, nil) 讓呼叫方知道無法判斷.
+func (c *Collector) countReadyNodes(ctx context.Context) (int32, []string) {
+	nodes, err := c.clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return -1, nil
+	}
+	var ready int32
+	notReady := []string{}
+	for _, n := range nodes.Items {
+		if isNodeReady(n) {
+			ready++
+		} else {
+			notReady = append(notReady, n.Name)
+		}
+	}
+	return ready, notReady
+}
+
+// isNodeReady 由 Node.Status.Conditions 判定 Ready=True.
+func isNodeReady(n corev1.Node) bool {
+	for _, cond := range n.Status.Conditions {
+		if cond.Type == corev1.NodeReady {
+			return cond.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // DeleteAgentDaemonSet 以 foreground propagation 刪除 DS，連帶把所有 agent

@@ -1,7 +1,7 @@
-// Package report 負責把 model.Report 渲染成多頁 PDF。
+// Package report 負責把 model.Report 渲染成多頁 PDF. 
 //
-// 字型以 go:embed 嵌入 Noto Sans TC，因此完全不依賴系統字型。
-// 所有時間欄位皆轉成台灣當地時間 (Asia/Taipei) 後再格式化。
+// 字型以 go:embed 嵌入 Noto Sans TC, 因此完全不依賴系統字型. 
+// 所有時間欄位皆轉成台灣當地時間 (Asia/Taipei) 後再格式化. 
 package report
 
 import (
@@ -15,8 +15,8 @@ import (
 	"k8s-health-check/internal/tz"
 )
 
-// 以 go:embed 把 Noto Sans TC 字型靜態打進 binary，避免 runtime 依賴外部
-// 字型檔。fontsource 已將字符集 subset 至繁體中文常用字。
+// 以 go:embed 把 Noto Sans TC 字型靜態打進 binary, 避免 runtime 依賴外部
+// 字型檔. fontsource 已將字符集 subset 至繁體中文常用字. 
 //
 //go:embed fonts/NotoSansTC-Regular.ttf
 var fontRegular []byte
@@ -26,7 +26,7 @@ var fontBold []byte
 
 const fontFamily = "NotoSansTC"
 
-// WritePDF 把 Report 渲染為多區段的 PDF 檔案。
+// WritePDF 把 Report 渲染為多區段的 PDF 檔案. 
 func WritePDF(r *model.Report, path string) error {
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetMargins(12, 14, 12)
@@ -60,8 +60,9 @@ func WritePDF(r *model.Report, path string) error {
 	renderNodeDisks(pdf, r)
 	renderPodSummary(pdf, r)
 	renderProblemPods(pdf, r)
-	renderTopMetrics(pdf, r)
 	renderWorkloads(pdf, r)
+	renderTopMetrics(pdf, r)
+	renderAllPods(pdf, r)
 	renderStorage(pdf, r)
 	renderControlPlane(pdf, r)
 	renderCerts(pdf, r)
@@ -73,7 +74,7 @@ func WritePDF(r *model.Report, path string) error {
 
 // ----- 共用 helpers -----------------------------------------------------
 
-// sectionTitle 產出每個章節的藍色色塊標題，並視需要換頁。
+// sectionTitle 產出每個章節的藍色色塊標題, 並視需要換頁. 
 func sectionTitle(pdf *gofpdf.Fpdf, title string) {
 	if pdf.GetY() > 240 {
 		pdf.AddPage()
@@ -88,13 +89,13 @@ func sectionTitle(pdf *gofpdf.Fpdf, title string) {
 	pdf.Ln(2)
 }
 
-// subTitle 用於章節內的子標題 (粗體 11pt 黑字)。
+// subTitle 用於章節內的子標題 (粗體 11pt 黑字). 
 func subTitle(pdf *gofpdf.Fpdf, s string) {
 	pdf.SetFont(fontFamily, "B", 11)
 	pdf.CellFormat(0, 7, s, "", 1, "L", false, 0, "")
 }
 
-// note 印出灰色的補充說明文字，常用於「無資料」的提示。
+// note 印出灰色的補充說明文字, 常用於"無資料"的提示. 
 func note(pdf *gofpdf.Fpdf, msg string) {
 	pdf.SetFont(fontFamily, "", 9)
 	pdf.SetTextColor(110, 110, 110)
@@ -102,7 +103,7 @@ func note(pdf *gofpdf.Fpdf, msg string) {
 	pdf.SetTextColor(0, 0, 0)
 }
 
-// tableHeader 畫出表格標題列；後續呼叫 tableRow 會接在底下。
+// tableHeader 畫出表格標題列; 後續呼叫 tableRow 會接在底下. 
 func tableHeader(pdf *gofpdf.Fpdf, widths []float64, headers []string) {
 	pdf.SetFillColor(220, 230, 245)
 	pdf.SetFont(fontFamily, "B", 9)
@@ -113,8 +114,8 @@ func tableHeader(pdf *gofpdf.Fpdf, widths []float64, headers []string) {
 	pdf.SetFont(fontFamily, "", 8)
 }
 
-// tableRow 畫一列資料；fill 為 true 時填淡藍色背景，做斑馬條紋效果。
-// 過長的內容會自動換行 (而非截斷)，row 高度依最長那格的行數動態調整。
+// tableRow 畫一列資料; fill 為 true 時填淡藍色背景, 做斑馬條紋效果. 
+// 過長的內容會自動換行 (而非截斷), row 高度依最長那格的行數動態調整. 
 func tableRow(pdf *gofpdf.Fpdf, widths []float64, cells []string, fill bool) {
 	if fill {
 		multiCellRow(pdf, widths, cells, 245, 247, 252)
@@ -123,17 +124,17 @@ func tableRow(pdf *gofpdf.Fpdf, widths []float64, cells []string, fill bool) {
 	}
 }
 
-// 表格內格距與行高常數。lineH=4.5 + padV=0.5 → 單行 row 高 5.5 (與舊版相容)。
+// 表格內格距與行高常數. lineH=4.5 + padV=0.5 → 單行 row 高 5.5 (與舊版相容). 
 const (
 	tableLineH = 4.5
 	tableCellPadV = 0.5
 	tableCellPadH = 0.7
 )
 
-// multiCellRow 畫一列可自動換行的表格資料。流程:
-//  1. 先用 SplitText 量測每格在欄寬內會被切成幾行，取最大值決定 row 高
+// multiCellRow 畫一列可自動換行的表格資料. 流程:
+//  1. 先用 SplitText 量測每格在欄寬內會被切成幾行, 取最大值決定 row 高
 //  2. 若超出底邊就先 AddPage
-//  3. 為每一格畫 fill+border 的矩形；再以 MultiCell 寫入文字 (不再加邊框)
+//  3. 為每一格畫 fill+border 的矩形; 再以 MultiCell 寫入文字 (不再加邊框)
 //  4. 結束時把游標重置到下一列起始 (左邊界, y+rowH)
 func multiCellRow(pdf *gofpdf.Fpdf, widths []float64, cells []string, fillR, fillG, fillB int) {
 	// 量測每格行數
@@ -166,19 +167,19 @@ func multiCellRow(pdf *gofpdf.Fpdf, widths []float64, cells []string, fillR, fil
 	for i, c := range cells {
 		// 邊框 + 填色背景
 		pdf.Rect(x, y, widths[i], rowH, "FD")
-		// 寫入文字 (MultiCell 自動換行，不再加邊框與填色)
+		// 寫入文字 (MultiCell 自動換行, 不再加邊框與填色)
 		innerW := widths[i] - 2*tableCellPadH
 		pdf.SetXY(x+tableCellPadH, y+tableCellPadV)
 		pdf.MultiCell(innerW, tableLineH, c, "", "L", false)
 		x += widths[i]
 	}
 
-	// 把游標放到下一列開頭，讓下次 tableRow 直接接上去
+	// 把游標放到下一列開頭, 讓下次 tableRow 直接接上去
 	pdf.SetXY(leftX, y+rowH)
 }
 
 // countWrapLines 利用 gofpdf.SplitText 估算 text 在 width 寬欄位內換行後
-// 會佔多少行，至少回傳 1。空字串視為 1 行 (保留版面對齊)。
+// 會佔多少行, 至少回傳 1. 空字串視為 1 行 (保留版面對齊). 
 func countWrapLines(pdf *gofpdf.Fpdf, text string, width float64) int {
 	if text == "" {
 		return 1
@@ -190,11 +191,11 @@ func countWrapLines(pdf *gofpdf.Fpdf, text string, width float64) int {
 	return len(lines)
 }
 
-// fit 把字串縮短到實際寬度不超過 maxWidth，超過時在尾端接上 "..."。
-// 用 PDF 自身的 GetStringWidth 量測，依目前字型字級實際寬度判斷，比起按
-// 字數截斷更精準 (中英混排寬度差很多)。
+// fit 把字串縮短到實際寬度不超過 maxWidth, 超過時在尾端接上 "...". 
+// 用 PDF 自身的 GetStringWidth 量測, 依目前字型字級實際寬度判斷, 比起按
+// 字數截斷更精準 (中英混排寬度差很多). 
 func fit(pdf *gofpdf.Fpdf, s string, maxWidth float64) string {
-	const padding = 1.5 // mm，避免貼齊邊界產生毛邊
+	const padding = 1.5 // mm, 避免貼齊邊界產生毛邊
 	target := maxWidth - padding
 	if target <= 0 || s == "" {
 		return s
@@ -218,8 +219,8 @@ func fit(pdf *gofpdf.Fpdf, s string, maxWidth float64) string {
 	return suffix
 }
 
-// kv 印出「key 粗體: value」的 key-value 格式。key 寬固定 50mm 會被 fit
-// 截斷；value 用 MultiCell 自動換行不必截斷。
+// kv 印出"key 粗體: value"的 key-value 格式. key 寬固定 50mm 會被 fit
+// 截斷; value 用 MultiCell 自動換行不必截斷. 
 func kv(pdf *gofpdf.Fpdf, k, v string) {
 	pdf.SetFont(fontFamily, "B", 10)
 	pdf.CellFormat(50, 6, fit(pdf, k, 50), "", 0, "L", false, 0, "")
@@ -238,26 +239,13 @@ func safe(s string) string {
 	return s
 }
 
-// clusterLabel 把 cluster name + 來源 (kubeadm / uid / flag / unknown) 組合
-// 成易讀的字串。例如 "prod-east (kubeadm)"。
+// clusterLabel 回傳 cluster name 純字串 (不附來源括號). 
+// 名稱來源仍會以 r.Cluster.NameSource 保留供其他需要時使用. 
 func clusterLabel(r *model.Report) string {
-	name := r.Cluster.Name
-	if name == "" {
-		name = "unknown"
+	if r.Cluster.Name == "" {
+		return "unknown"
 	}
-	src := r.Cluster.NameSource
-	switch src {
-	case "flag":
-		return name + " (使用者指定)"
-	case "kubeadm":
-		return name + " (kubeadm-config)"
-	case "uid":
-		return name + " (kube-system UID)"
-	case "", "unknown":
-		return name
-	default:
-		return fmt.Sprintf("%s (%s)", name, src)
-	}
+	return r.Cluster.Name
 }
 
 // ----- 封面 -----------------------------------------------------------
@@ -305,7 +293,7 @@ func renderCover(pdf *gofpdf.Fpdf, r *model.Report) {
 
 // ----- 結論與建議 ------------------------------------------------------
 
-// statusFill 依整體狀態決定色塊背景: 嚴重=紅、警告=琥珀、其他=綠。
+// statusFill 依整體狀態決定色塊背景: 嚴重=紅, 警告=琥珀, 其他=綠. 
 func statusFill(status string) (r, g, b int) {
 	switch status {
 	case "嚴重":
@@ -359,7 +347,7 @@ func renderConclusion(pdf *gofpdf.Fpdf, r *model.Report) {
 
 	subTitle(pdf, "主要發現")
 	if len(r.Conclusion.Findings) == 0 {
-		note(pdf, "未偵測到明顯問題。")
+		note(pdf, "未偵測到明顯問題. ")
 	} else {
 		widths := []float64{20, 24, 56, 86}
 		tableHeader(pdf, widths, []string{"嚴重度", "類別", "標題", "說明"})
@@ -377,7 +365,7 @@ func renderConclusion(pdf *gofpdf.Fpdf, r *model.Report) {
 
 	subTitle(pdf, "建議事項")
 	if len(r.Conclusion.Recommendations) == 0 {
-		note(pdf, "本次掃描沒有額外建議。")
+		note(pdf, "本次掃描沒有額外建議. ")
 		return
 	}
 	widths := []float64{16, 24, 80, 66}
@@ -402,7 +390,7 @@ func min255(v int) int {
 
 // ----- 1. 視覺化儀表板 ------------------------------------------------
 
-// renderDashboard 把幾個關鍵指標以圖形方式呈現，方便快速掃過 cluster 狀況。
+// renderDashboard 把幾個關鍵指標以圖形方式呈現, 方便快速掃過 cluster 狀況. 
 //   - 左上: Pod 狀態圓餅
 //   - 右上: 憑證到期分佈長條
 //   - 中段: 節點 CPU 使用率水平條
@@ -418,12 +406,15 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 	pdf.SetXY(105, yTop)
 	subTitle(pdf, "憑證到期分佈 (剩餘天數)")
 
-	// CrashLoopBackOff / 重啟過多 / 容器未 Ready 的 Pod 在 K8s 階段上仍是
-	// Running，但其實處於異常狀態。把這類從 Running 切片中拆出來，獨立顯示
-	// 為紅色「異常」切片，使用者才能在圓餅上看到 crash 影響。
+	// CrashLoopBackOff / 重啟過多 / container未 Ready 的 Pod 在 K8s 階段上仍是
+	// Running, 但其實處於異常狀態. 把這類從 Running 切片中拆出來, 獨立顯示
+	// 為紅色"異常"切片, 使用者才能在圓餅上看到 crash 影響.
+	//
+	// 注意: 用 p.Phase (K8s 原始 phase) 判斷, 不能用 p.Status — 後者已被
+	// effectivePhase 改為 CrashLoopBackOff 等顯示字串, 不再是 "Running".
 	problemRunning := 0
 	for _, p := range r.ProblemPods {
-		if strings.EqualFold(p.Status, "Running") {
+		if strings.EqualFold(p.Phase, "Running") {
 			problemRunning++
 		}
 	}
@@ -452,7 +443,7 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 	// ----- 節點資源使用率水平條 -----
 	subTitle(pdf, "節點 CPU 使用率")
 	if len(r.NodeMetrics) == 0 {
-		note(pdf, "metrics-server 未安裝，無法繪製。")
+		note(pdf, "metrics-server 未安裝, 無法繪製. ")
 	} else {
 		bars := make([]HorizBar, 0, len(r.NodeMetrics))
 		for _, m := range r.NodeMetrics {
@@ -470,7 +461,7 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 
 	subTitle(pdf, "節點記憶體使用率")
 	if len(r.NodeMetrics) == 0 {
-		note(pdf, "metrics-server 未安裝，無法繪製。")
+		note(pdf, "metrics-server 未安裝, 無法繪製. ")
 	} else {
 		bars := make([]HorizBar, 0, len(r.NodeMetrics))
 		for _, m := range r.NodeMetrics {
@@ -488,18 +479,18 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 
 	subTitle(pdf, "節點各掛點磁碟使用率")
 	if len(r.NodeAgents) == 0 {
-		note(pdf, "未部署 DaemonSet agent；以 --mode=agent 啟動 DaemonSet 後重跑可呈現此圖。")
+		note(pdf, "未部署 DaemonSet agent; 以 --mode=agent 啟動 DaemonSet 後重跑可呈現此圖. ")
 	} else {
 		bars := allNodeDiskBars(r.NodeAgents)
 		if len(bars) == 0 {
-			note(pdf, "agent 回報資料中無任何掛點 (可能未掛 hostPath)。")
+			note(pdf, "agent 回報資料中無任何掛點 (可能未掛 hostPath). ")
 		} else {
 			drawHorizBars(pdf, 12, pdf.GetY()+1, 186, 5.5, 60, 60, bars)
 		}
 	}
 }
 
-// pctStatus 把百分比映射到 OK / WARN / CRITICAL 的色條。
+// pctStatus 把百分比映射到 OK / WARN / CRITICAL 的色條. 
 func pctStatus(p float64) string {
 	switch {
 	case p >= 90:
@@ -511,7 +502,7 @@ func pctStatus(p float64) string {
 	}
 }
 
-// buildCertBins 把所有憑證依「剩餘天數區間」分桶，給直方圖用。
+// buildCertBins 把所有憑證依"剩餘天數區間"分桶, 給直方圖用. 
 func buildCertBins(certs []model.CertInfo) []HistBin {
 	bins := []HistBin{
 		{Label: "已過期", R: 198, G: 40, B: 40},
@@ -540,8 +531,8 @@ func buildCertBins(certs []model.CertInfo) []HistBin {
 	return bins
 }
 
-// allNodeDiskBars 把每個 agent 回報的「所有掛點」攤平成水平條。
-// 標籤格式為 "<node>  <掛點>"，依使用率由高到低排序，方便一眼看到最緊迫的。
+// allNodeDiskBars 把每個 agent 回報的"所有掛點"攤平成水平條. 
+// 標籤格式為 "<node>  <掛點>", 依使用率由高到低排序, 方便一眼看到最緊迫的. 
 func allNodeDiskBars(nas []model.NodeAgentData) []HorizBar {
 	out := make([]HorizBar, 0)
 	for _, na := range nas {
@@ -559,7 +550,7 @@ func allNodeDiskBars(nas []model.NodeAgentData) []HorizBar {
 	return out
 }
 
-// humanBytes 格式化 bytes 數量為 GiB / MiB。
+// humanBytes 格式化 bytes 數量為 GiB / MiB. 
 func humanBytes(b uint64) string {
 	const (
 		KiB = 1024
@@ -596,15 +587,17 @@ func renderClusterOverview(pdf *gofpdf.Fpdf, r *model.Report) {
 func renderNodes(pdf *gofpdf.Fpdf, r *model.Report) {
 	sectionTitle(pdf, "3. 節點")
 	if len(r.Nodes) == 0 {
-		note(pdf, "未蒐集到節點資料。")
+		note(pdf, "未蒐集到節點資料. ")
 		return
 	}
-	widths := []float64{40, 22, 22, 24, 26, 18, 14, 20}
-	tableHeader(pdf, widths, []string{"名稱", "角色", "狀態", "Kubelet", "內部 IP", "存活時間", "Pods", "Runtime"})
+	// 移除 Pods 欄: 節點 Pod 數已在第 6/7 章 (Pod 摘要 / 問題 Pod / 總覽) 呈現,
+	// 此表的"Pods"欄重複且資訊量低; 14mm 全數補回名稱欄, 讓長節點名不易被截斷.
+	widths := []float64{54, 22, 22, 24, 26, 18, 20}
+	tableHeader(pdf, widths, []string{"名稱", "角色", "狀態", "Kubelet", "內部 IP", "存活時間", "Runtime"})
 	for i, n := range r.Nodes {
 		tableRow(pdf, widths, []string{
 			n.Name, n.Roles, n.Status, n.KubeletVersion,
-			n.InternalIP, n.Age, fmt.Sprintf("%d", n.PodCount), shortRuntime(n.Runtime),
+			n.InternalIP, n.Age, shortRuntime(n.Runtime),
 		}, i%2 == 0)
 	}
 
@@ -631,7 +624,7 @@ func renderNodes(pdf *gofpdf.Fpdf, r *model.Report) {
 		}
 	}
 	if !hadAny {
-		note(pdf, "所有節點條件正常。")
+		note(pdf, "所有節點條件正常. ")
 	}
 }
 
@@ -646,7 +639,7 @@ func shortRuntime(r string) string {
 func renderNodeMetrics(pdf *gofpdf.Fpdf, r *model.Report) {
 	sectionTitle(pdf, "4. 節點資源使用率")
 	if len(r.NodeMetrics) == 0 {
-		note(pdf, "metrics.k8s.io API 不可用; 請安裝 metrics-server 以填入此區段。")
+		note(pdf, "metrics.k8s.io API 不可用; 請安裝 metrics-server 以填入此區段. ")
 		return
 	}
 	widths := []float64{50, 22, 30, 22, 30, 18, 18}
@@ -664,19 +657,19 @@ func renderNodeMetrics(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
-// renderNodeDisks 利用 NodeAgents 的資料畫出每個節點上各掛點的磁碟使用率，
-// 同一節點的所有掛點集中放在同一張表，便於對比。
+// renderNodeDisks 利用 NodeAgents 的資料畫出每個節點上各掛點的磁碟使用率, 
+// 同一節點的所有掛點集中放在同一張表, 便於對比. 
 func renderNodeDisks(pdf *gofpdf.Fpdf, r *model.Report) {
 	sectionTitle(pdf, "5. 節點磁碟使用率")
 	if len(r.NodeAgents) == 0 {
-		note(pdf, "未部署 DaemonSet agent，無磁碟資料。請部署 deploy/all-in-one.yaml 中的 agent DaemonSet。")
+		note(pdf, "未部署 DaemonSet agent, 無磁碟資料. 請部署 deploy/all-in-one.yaml 中的 agent DaemonSet. ")
 		return
 	}
 	for _, na := range r.NodeAgents {
 		subTitle(pdf, fmt.Sprintf("節點: %s  (採樣時間 %s)",
 			safe(na.NodeName), tz.In(na.CollectedAt).Format("2006-01-02 15:04:05")))
 		if len(na.Disks) == 0 {
-			note(pdf, "agent 回報無可讀取的掛點，請確認 hostPath 已掛入 /host。")
+			note(pdf, "agent 回報無可讀取的掛點, 請確認 hostPath 已掛入 /host. ")
 			pdf.Ln(2)
 			continue
 		}
@@ -715,11 +708,11 @@ func renderPodSummary(pdf *gofpdf.Fpdf, r *model.Report) {
 func renderProblemPods(pdf *gofpdf.Fpdf, r *model.Report) {
 	sectionTitle(pdf, "7. 問題 Pod (未就緒 / 重啟 / 失敗)")
 	if len(r.ProblemPods) == 0 {
-		note(pdf, "未偵測到問題 Pod。")
+		note(pdf, "未偵測到問題 Pod. ")
 		return
 	}
 	widths := []float64{30, 50, 22, 16, 30, 38}
-	tableHeader(pdf, widths, []string{"Namespace", "Pod", "Phase", "重啟次數", "節點", "原因"})
+	tableHeader(pdf, widths, []string{"Namespace", "Pod", "Status", "重啟次數", "節點", "原因"})
 	for i, p := range r.ProblemPods {
 		tableRow(pdf, widths, []string{
 			p.Namespace, p.Name, p.Status,
@@ -728,10 +721,57 @@ func renderProblemPods(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
+// renderAllPods 列出 cluster 中所有 (非 collector 自身) Pod 的詳細資訊,
+// 包含 namespace, Pod 名, 狀態, IP, 排程節點, 以及 hostPath 掛載 (有的話)。
+//
+// hostPath 欄位採多行格式 "/host/path → /in/container [container, ro]",
+// 一個 Pod 有多個 hostPath 掛載時會以換行分隔; MultiCell 自動擴展 row 高度。
+func renderAllPods(pdf *gofpdf.Fpdf, r *model.Report) {
+	sectionTitle(pdf, "10. Pod 總覽")
+	if len(r.AllPods) == 0 {
+		note(pdf, "沒有可顯示的 Pod (collector 自身 Pod 一律排除). ")
+		return
+	}
+	note(pdf, fmt.Sprintf("共 %d 個 Pod (已排除 k8s-healthcheck 蒐集器自身 Pod). HostPath 欄位列出 Pod 掛載到節點本機的目錄.", len(r.AllPods)))
+	pdf.Ln(1)
+
+	widths := []float64{30, 50, 18, 24, 26, 38}
+	tableHeader(pdf, widths, []string{"Namespace", "Pod", "Status", "Pod IP", "節點", "HostPath 掛載"})
+	for i, p := range r.AllPods {
+		tableRow(pdf, widths, []string{
+			p.Namespace,
+			p.Name,
+			safe(p.Status),
+			safe(p.PodIP),
+			safe(p.Node),
+			formatHostPaths(p.HostPaths),
+		}, i%2 == 0)
+	}
+}
+
+// formatHostPaths 把 HostPathMount 清單轉為人讀字串, 僅顯示宿主機路徑 (例如
+// "/opt/cni/bin"). 同一 Pod 多個 hostPath 以換行分隔, 重複路徑會去重 (例如
+// 兩個 container 都掛同一個 host 目錄, 顯示一次即可)。空清單回 "-".
+func formatHostPaths(mounts []model.HostPathMount) string {
+	if len(mounts) == 0 {
+		return "-"
+	}
+	seen := map[string]bool{}
+	lines := make([]string, 0, len(mounts))
+	for _, m := range mounts {
+		if seen[m.HostPath] {
+			continue
+		}
+		seen[m.HostPath] = true
+		lines = append(lines, m.HostPath)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func renderTopMetrics(pdf *gofpdf.Fpdf, r *model.Report) {
-	sectionTitle(pdf, "8. 資源耗用前段班")
+	sectionTitle(pdf, "9. 資源耗用前段班")
 	if len(r.TopCPU) == 0 && len(r.TopMemory) == 0 {
-		note(pdf, "沒有 Pod 度量資料; metrics-server 未安裝或無法存取。")
+		note(pdf, "沒有 Pod 度量資料; metrics-server 未安裝或無法存取. ")
 		return
 	}
 	subTitle(pdf, "CPU 使用量前 10 名")
@@ -749,7 +789,7 @@ func renderTopMetrics(pdf *gofpdf.Fpdf, r *model.Report) {
 }
 
 func renderWorkloads(pdf *gofpdf.Fpdf, r *model.Report) {
-	sectionTitle(pdf, "9. 工作負載")
+	sectionTitle(pdf, "8. 工作負載")
 	w := r.Workloads
 	pairs := [][3]string{
 		{"Deployments", fmt.Sprintf("%d", w.Deployments.Total), fmt.Sprintf("%d", w.Deployments.Ready)},
@@ -781,16 +821,16 @@ func renderWorkloads(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
-// renderStorage 把儲存章節整合成「StorageClasses + PV 詳情 + PVC 詳情」三段，
-// 各自帶上各階段計數的 subtitle，避免與舊版重複出現「概覽計數表 + 詳細表」。
+// renderStorage 把儲存章節整合成"StorageClasses + PV 詳情 + PVC 詳情"三段, 
+// 各自帶上各階段計數的 subtitle, 避免與舊版重複出現"概覽計數表 + 詳細表". 
 func renderStorage(pdf *gofpdf.Fpdf, r *model.Report) {
-	sectionTitle(pdf, "10. 儲存")
+	sectionTitle(pdf, "11. 儲存")
 	s := r.Storage
 
 	// === StorageClass 詳細表 ===
 	subTitle(pdf, fmt.Sprintf("Storage Classes (共 %d 個)", len(s.StorageClasses)))
 	if len(s.StorageClasses) == 0 {
-		note(pdf, "未偵測到 StorageClass。")
+		note(pdf, "未偵測到 StorageClass. ")
 	} else {
 		w := []float64{50, 60, 24, 30, 12, 12}
 		tableHeader(pdf, w, []string{"名稱", "Provisioner", "Reclaim", "Binding 模式", "PV", "PVC"})
@@ -808,7 +848,7 @@ func renderStorage(pdf *gofpdf.Fpdf, r *model.Report) {
 				fmt.Sprintf("%d", sc.PVCCount),
 			}, i%2 == 0)
 		}
-		note(pdf, "* 表示 default StorageClass。")
+		note(pdf, "* 表示 default StorageClass. ")
 	}
 
 	// === PersistentVolumes 詳情 (含階段彙總) ===
@@ -817,7 +857,7 @@ func renderStorage(pdf *gofpdf.Fpdf, r *model.Report) {
 		"PersistentVolumes (共 %d / Bound %d / Available %d / Released %d / Failed %d)",
 		s.PVs, s.PVsBound, s.PVsAvailable, s.PVsReleased, s.PVsFailed))
 	if len(s.PVList) == 0 {
-		note(pdf, "未偵測到 PV。")
+		note(pdf, "未偵測到 PV. ")
 	} else {
 		w := []float64{56, 22, 16, 24, 50, 20}
 		tableHeader(pdf, w, []string{"名稱", "容量", "存取", "StorageClass", "Claim", "狀態"})
@@ -839,7 +879,7 @@ func renderStorage(pdf *gofpdf.Fpdf, r *model.Report) {
 		"PersistentVolumeClaims (共 %d / Bound %d / Pending %d)",
 		s.PVCs, s.PVCsBound, s.PVCsPending))
 	if len(s.PVCList) == 0 {
-		note(pdf, "未偵測到 PVC。")
+		note(pdf, "未偵測到 PVC. ")
 	} else {
 		w := []float64{30, 50, 18, 22, 24, 44}
 		tableHeader(pdf, w, []string{"Namespace", "名稱", "容量", "狀態", "StorageClass", "綁定 PV"})
@@ -857,9 +897,9 @@ func renderStorage(pdf *gofpdf.Fpdf, r *model.Report) {
 }
 
 func renderControlPlane(pdf *gofpdf.Fpdf, r *model.Report) {
-	sectionTitle(pdf, "11. 控制平面健康")
+	sectionTitle(pdf, "12. Control-plane健康")
 	if len(r.APIHealth) == 0 && len(r.Components) == 0 {
-		note(pdf, "控制平面健康端點不可用。")
+		note(pdf, "Control-plane健康端點不可用. ")
 		return
 	}
 	if len(r.APIHealth) > 0 {
@@ -880,19 +920,19 @@ func renderControlPlane(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
-// renderCerts 把所有憑證依「來源」分組呈現，方便分辨 K8s pki / kubelet / etcd /
-// kubeconfig 不同類別的到期狀況。
+// renderCerts 把所有憑證依"來源"分組呈現, 方便分辨 K8s pki / kubelet / etcd /
+// kubeconfig 不同類別的到期狀況. 
 func renderCerts(pdf *gofpdf.Fpdf, r *model.Report) {
-	sectionTitle(pdf, "12. 憑證到期")
+	sectionTitle(pdf, "13. 憑證到期")
 	if len(r.Certs) == 0 {
-		note(pdf, "未取得憑證資料。aggregator 模式下請部署 DaemonSet agent，agent 會掃 /etc/kubernetes/pki、/var/lib/kubelet/pki 與 *.conf 內嵌憑證。")
+		note(pdf, "未取得憑證資料. aggregator 模式下請部署 DaemonSet agent, agent 會掃 /etc/kubernetes/pki, /var/lib/kubelet/pki 與 *.conf 內嵌憑證. ")
 		return
 	}
 	// 依 source 分類
 	groups := map[string][]model.CertInfo{}
 	order := []string{"k8s-pki", "etcd", "kubeconfig", "kubelet", ""}
 	titles := map[string]string{
-		"k8s-pki":    "K8s 控制平面憑證 (/etc/kubernetes/pki)",
+		"k8s-pki":    "K8s Control-plane憑證 (/etc/kubernetes/pki)",
 		"etcd":       "etcd 憑證",
 		"kubeconfig": "Kubeconfig 內嵌 client 憑證",
 		"kubelet":    "kubelet 憑證 (/var/lib/kubelet/pki)",
@@ -912,13 +952,14 @@ func renderCerts(pdf *gofpdf.Fpdf, r *model.Report) {
 		}
 		first = false
 		subTitle(pdf, titles[key])
-		widths := []float64{30, 60, 36, 22, 18, 22}
-		tableHeader(pdf, widths, []string{"節點", "路徑", "Subject", "到期日", "剩餘天數", "狀態"})
+		// 移除 Subject 欄, 路徑改顯示完整字串 (multiCellRow 會自動依寬度換行).
+		// 寬度合計 28+96+22+18+22 = 186mm 對齊 A4 可用寬.
+		widths := []float64{28, 96, 22, 18, 22}
+		tableHeader(pdf, widths, []string{"節點", "路徑", "到期日", "剩餘天數", "狀態"})
 		for i, c := range certs {
 			tableRow(pdf, widths, []string{
 				safe(c.Node),
-				shortPath(c.Path),
-				truncate(c.Subject, 28),
+				c.Path,
 				tz.In(c.NotAfter).Format("2006-01-02"),
 				fmt.Sprintf("%d", c.DaysLeft),
 				c.Status,
@@ -927,26 +968,10 @@ func renderCerts(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
-func shortPath(p string) string {
-	if i := strings.LastIndex(p, "/pki/"); i >= 0 {
-		return "..." + p[i:]
-	}
-	if i := strings.LastIndex(p, "/kubelet/"); i >= 0 {
-		return "..." + p[i:]
-	}
-	if i := strings.LastIndex(p, "/kubernetes/"); i >= 0 {
-		return "..." + p[i:]
-	}
-	if len(p) > 50 {
-		return "..." + p[len(p)-47:]
-	}
-	return p
-}
-
 func renderEvents(pdf *gofpdf.Fpdf, r *model.Report) {
-	sectionTitle(pdf, "13. 近期警告事件")
+	sectionTitle(pdf, "14. 近期警告事件")
 	if len(r.Events) == 0 {
-		note(pdf, "區間內無警告 / 錯誤事件。")
+		note(pdf, "區間內無警告 / 錯誤事件. ")
 		return
 	}
 	widths := []float64{32, 22, 25, 50, 57}
@@ -966,15 +991,15 @@ func renderErrors(pdf *gofpdf.Fpdf, r *model.Report) {
 	if len(r.Errors) == 0 {
 		return
 	}
-	sectionTitle(pdf, "14. 蒐集備註")
-	note(pdf, "以下蒐集器回報非致命錯誤，相關區段可能不完整:")
+	sectionTitle(pdf, "15. 蒐集備註")
+	note(pdf, "以下蒐集器回報非致命錯誤, 相關區段可能不完整:")
 	pdf.SetFont(fontFamily, "", 9)
 	for _, e := range r.Errors {
 		pdf.MultiCell(0, 5, "- "+e, "", "L", false)
 	}
 }
 
-// truncate 以「rune」為單位截斷，避免把中文字切到一半變成亂碼。
+// truncate 以"rune"為單位截斷, 避免把中文字切到一半變成亂碼. 
 func truncate(s string, n int) string {
 	rs := []rune(s)
 	if len(rs) <= n {

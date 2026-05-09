@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // TestBuildAgentDaemonSet 驗證動態產生的 DaemonSet 物件結構, 不能漏掉
@@ -101,5 +102,36 @@ func TestBuildAgentDaemonSet(t *testing.T) {
 		if !found {
 			t.Errorf("env var %s missing", name)
 		}
+	}
+}
+
+// TestIsNodeReady 驗證 Ready 條件判定: 只有 Ready=True 才算 Ready,
+// Ready=False / Unknown / 完全沒有 Ready 條件都視為 NotReady.
+func TestIsNodeReady(t *testing.T) {
+	cases := []struct {
+		name string
+		conds []corev1.NodeCondition
+		want  bool
+	}{
+		{"Ready=True", []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}}, true},
+		{"Ready=False", []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionFalse}}, false},
+		{"Ready=Unknown", []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionUnknown}}, false},
+		{"沒有 Ready 條件", []corev1.NodeCondition{{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionFalse}}, false},
+		{"空條件清單", nil, false},
+		{"Ready=True 與其他壓力共存", []corev1.NodeCondition{
+			{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionTrue},
+			{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "n"},
+				Status:     corev1.NodeStatus{Conditions: tc.conds},
+			}
+			if got := isNodeReady(n); got != tc.want {
+				t.Errorf("isNodeReady = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

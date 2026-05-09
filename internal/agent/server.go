@@ -1,7 +1,7 @@
 // Package agent 是 DaemonSet 模式下執行的 HTTP 伺服。
 //
 // 每個 Kubernetes 節點上會跑一個 Pod，這支 server 在 :8080 提供 /data
-// 端點返回該節點的 NodeAgentData (磁碟、kubelet 憑證、控制平面憑證...)。
+// 端點返回該節點的 NodeAgentData (磁碟、kubelet 憑證、Control-plane 憑證...)。
 // aggregator 端會在產生報告時主動拉取所有 agent 的 /data 並彙整。
 //
 // 此套件刻意不引入 client-go，因為 agent 不需要對 API server 發 request。
@@ -90,6 +90,6 @@ func collect(cfg Config) model.NodeAgentData {
 		CollectedAt: tz.Now(),
 	}
 	d.Disks = CollectDisks(cfg.HostPrefix)
-	d.Certs = CollectCerts(DefaultCertScanPaths(cfg.HostPrefix), cfg.NodeName)
+	d.Certs = CollectCerts(DefaultCertScanPaths(cfg.HostPrefix), cfg.HostPrefix, cfg.NodeName)
 	return d
 }

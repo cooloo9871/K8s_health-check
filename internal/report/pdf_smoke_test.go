@@ -42,9 +42,24 @@ func TestSmokeRenderTC(t *testing.T) {
 		// CrashLoopBackOff Pod 在 K8s 端 Phase 仍為 Running，container 的 waiting
 		// reason 才是 CrashLoopBackOff。以此模擬真實情境，驗證圓餅圖的「異常」
 		// 切片會把這類 Pod 從 Running 中拆出來。
+		// 模擬 collector 端 effectivePhase 後的結果: Status 顯示有效狀態,
+		// Phase 保留 K8s 原始 phase (供 dashboard 圓餅依 raw phase 分桶)。
 		ProblemPods: []model.PodInfo{
-			{Namespace: "app", Name: "api-x", Status: "Running", Restarts: 9, Reason: "CrashLoopBackOff", Message: "back-off 5m0s restarting failed container=api"},
-			{Namespace: "kube-system", Name: "img-pull-fail", Status: "Pending", Reason: "ImagePullBackOff", Message: "Back-off pulling image \"foo:bar\""},
+			{Namespace: "app", Name: "api-x", Status: "CrashLoopBackOff", Phase: "Running", Restarts: 9, Reason: "CrashLoopBackOff", Message: "back-off 5m0s restarting failed container=api"},
+			{Namespace: "kube-system", Name: "img-pull-fail", Status: "ImagePullBackOff", Phase: "Pending", Reason: "ImagePullBackOff", Message: "Back-off pulling image \"foo:bar\""},
+		},
+		AllPods: []model.PodOverview{
+			{Namespace: "app", Name: "api-x", Status: "CrashLoopBackOff", PodIP: "10.244.1.5", Node: "node-1"},
+			{Namespace: "app", Name: "worker-7c4f", Status: "Running", PodIP: "10.244.2.18", Node: "node-2"},
+			{
+				Namespace: "kube-system", Name: "node-exporter-x", Status: "Running",
+				PodIP: "10.244.0.7", Node: "node-1",
+				HostPaths: []model.HostPathMount{
+					{VolumeName: "rootfs", HostPath: "/", MountPath: "/host", Container: "node-exporter", ReadOnly: true},
+					{VolumeName: "proc", HostPath: "/proc", MountPath: "/host/proc", Container: "node-exporter", ReadOnly: true},
+				},
+			},
+			{Namespace: "kube-system", Name: "img-pull-fail", Status: "ImagePullBackOff", PodIP: "", Node: "node-2"},
 		},
 		Workloads: model.WorkloadSummary{
 			Deployments: model.WorkloadStats{Total: 20, Ready: 18},
@@ -101,7 +116,7 @@ func TestSmokeRenderTC(t *testing.T) {
 		t.Fatalf("advisor 未產生 OverallStatus")
 	}
 	if len(r.Conclusion.Findings) == 0 {
-		t.Fatalf("advisor 沒有任何 Finding，預期至少有節點/儲存/控制平面相關問題")
+		t.Fatalf("advisor 沒有任何 Finding，預期至少有節點/儲存/Control-plane相關問題")
 	}
 	// 確認磁碟告警有觸發
 	hasDisk := false

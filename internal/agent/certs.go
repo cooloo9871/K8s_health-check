@@ -39,30 +39,63 @@ func DefaultCertScanPaths(hostPrefix string) CertScanPaths {
 }
 
 // CollectCerts 解析 paths 中各類來源的憑證，回傳合併後的清單。
+//
+// hostPrefix 是 agent 容器內掛 host 用的根 (例如 "/host"); 寫入 CertInfo.Path
+// 前會把這段前綴 strip 掉，PDF 顯示的就是節點上的實際絕對路徑而非容器視角。
+// 空字串代表不做替換 (本機開發 / cluster 外部測試時很常見)。
+//
 // nodeName 會填入每張憑證的 Node 欄位以利 aggregator 區分。
-func CollectCerts(paths CertScanPaths, nodeName string) []model.CertInfo {
+func CollectCerts(paths CertScanPaths, hostPrefix, nodeName string) []model.CertInfo {
 	out := []model.CertInfo{}
 
 	// K8s control-plane PKI
-	out = append(out, scanDirCerts(paths.K8sPKI, "k8s-pki", nodeName)...)
+	out = append(out, scanDirCerts(paths.K8sPKI, "k8s-pki", hostPrefix, nodeName)...)
 	// etcd 通常已經是 K8sPKI/etcd，但別名掃描以防 distro 把它分離出來
 	if paths.EtcdPKI != "" && paths.EtcdPKI != paths.K8sPKI {
-		out = append(out, scanDirCerts(paths.EtcdPKI, "etcd", nodeName)...)
+		out = append(out, scanDirCerts(paths.EtcdPKI, "etcd", hostPrefix, nodeName)...)
 	}
 	// kubelet
-	out = append(out, scanDirCerts(paths.KubeletPKI, "kubelet", nodeName)...)
+	out = append(out, scanDirCerts(paths.KubeletPKI, "kubelet", hostPrefix, nodeName)...)
 	// kubeconfig 內嵌
-	out = append(out, scanKubeconfigCerts(paths.KubeconfDir, nodeName)...)
+	out = append(out, scanKubeconfigCerts(paths.KubeconfDir, hostPrefix, nodeName)...)
 
 	// 依剩餘天數由少到多排序，最緊迫的排前面
 	sortCerts(out)
 	return out
 }
 
+// stripHostPrefix 把 path 開頭的 hostPrefix 拿掉, 還原為節點上的真實絕對
+// 路徑 (例如 "/host/etc/kubernetes/pki/apiserver.crt" → "/etc/kubernetes/pki/apiserver.crt").
+//
+// 規則:
+//   - hostPrefix 為空 → 直接回 path (本機開發情境, path 本身就是節點視角)
+//   - path 等於 hostPrefix → 回 "/" (避免回空字串造成不合法路徑)
+//   - path 以 hostPrefix + "/" 開頭 → 回 path[len(hostPrefix):]
+//   - 其他 → 不動 (代表 path 不在 hostPrefix 之下, 例如使用者傳了絕對路徑)
+//
+// hostPrefix 末尾若有多餘斜線會被 filepath.Clean 正規化掉以免誤判。
+func stripHostPrefix(hostPrefix, path string) string {
+	if hostPrefix == "" {
+		return path
+	}
+	clean := filepath.Clean(hostPrefix)
+	if clean == "/" || clean == "." {
+		return path
+	}
+	if path == clean {
+		return "/"
+	}
+	if strings.HasPrefix(path, clean+"/") {
+		return path[len(clean):]
+	}
+	return path
+}
+
 // scanDirCerts 走訪 root 目錄下所有 *.crt / *.pem，把每個 PEM block
 // 解出來填成 CertInfo。Source 會被覆寫為傳入值；遇到 etcd 子目錄會
 // 自動把 source 改為 "etcd" 以便 PDF 端依類別著色。
-func scanDirCerts(root, source, nodeName string) []model.CertInfo {
+// hostPrefix 用來把容器視角的路徑 (例如 /host/etc/...) 換回節點實際路徑。
+func scanDirCerts(root, source, hostPrefix, nodeName string) []model.CertInfo {
 	if root == "" {
 		return nil
 	}
@@ -90,7 +123,7 @@ func scanDirCerts(root, source, nodeName string) []model.CertInfo {
 			src = "etcd"
 		}
 		for _, c := range parsePEMCerts(raw) {
-			out = append(out, certToInfo(c, path, src, nodeName))
+			out = append(out, certToInfo(c, stripHostPrefix(hostPrefix, path), src, nodeName))
 		}
 		return nil
 	})
@@ -104,7 +137,8 @@ var kubeconfigCertRE = regexp.MustCompile(`(?m)^\s*client-certificate-data:\s*(\
 // client cert。kubeadm 預設會在 /etc/kubernetes 下放 admin.conf /
 // controller-manager.conf / scheduler.conf / kubelet.conf 等，這些 client
 // cert 並不會出現在 PKI 目錄裡，必須從 kubeconfig 解出來才能監控到期。
-func scanKubeconfigCerts(dir, nodeName string) []model.CertInfo {
+// hostPrefix 用來把容器視角的路徑 (例如 /host/etc/...) 換回節點實際路徑。
+func scanKubeconfigCerts(dir, hostPrefix, nodeName string) []model.CertInfo {
 	if dir == "" {
 		return nil
 	}
@@ -129,7 +163,7 @@ func scanKubeconfigCerts(dir, nodeName string) []model.CertInfo {
 				continue
 			}
 			for _, c := range parsePEMCerts(pemBytes) {
-				out = append(out, certToInfo(c, path, "kubeconfig", nodeName))
+				out = append(out, certToInfo(c, stripHostPrefix(hostPrefix, path), "kubeconfig", nodeName))
 			}
 		}
 	}
