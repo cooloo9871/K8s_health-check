@@ -153,6 +153,27 @@ func TestSmokeRenderTC(t *testing.T) {
 // 因此實際測試在 collector 套件內 (見 collector/agents_test.go 若有)，這裡
 // 僅以註解保留設計意圖。
 
+// TestStripHostFromCertPath 驗證 PDF 渲染端的最後一道防線: 即使 r.Certs
+// 中 c.Path 仍帶有 /host 前綴, 顯示前一定會被切掉。
+func TestStripHostFromCertPath(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/host/etc/kubernetes/pki/apiserver.crt", "/etc/kubernetes/pki/apiserver.crt"},
+		{"/host/var/lib/kubelet/pki/kubelet.crt", "/var/lib/kubelet/pki/kubelet.crt"},
+		{"/host", "/"},
+		{"/host/", "/"},
+		{"/etc/kubernetes/pki/x.crt", "/etc/kubernetes/pki/x.crt"}, // 已乾淨, 不動
+		{"/hosted/foo", "/hosted/foo"},                              // 字首像但非邊界, 不動
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := stripHostFromCertPath(tc.in); got != tc.want {
+			t.Errorf("stripHostFromCertPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestRenderEmptyCerts 模擬 cluster 完全沒有憑證資料的情境，
 // 用來防止 charts.go 的「無憑證」fallback 用到未註冊的字型 style (例如 Italic)。
 func TestRenderEmptyCerts(t *testing.T) {

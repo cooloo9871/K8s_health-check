@@ -959,7 +959,7 @@ func renderCerts(pdf *gofpdf.Fpdf, r *model.Report) {
 		for i, c := range certs {
 			tableRow(pdf, widths, []string{
 				safe(c.Node),
-				c.Path,
+				stripHostFromCertPath(c.Path),
 				tz.In(c.NotAfter).Format("2006-01-02"),
 				fmt.Sprintf("%d", c.DaysLeft),
 				c.Status,
@@ -999,7 +999,25 @@ func renderErrors(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
-// truncate 以"rune"為單位截斷, 避免把中文字切到一半變成亂碼. 
+// stripHostFromCertPath 是 PDF 渲染端的最後一道防線: 即使 collector / agent
+// 端因舊 image 還在跑而漏掉 strip, PDF 顯示前再切一次 /host 前綴, 確保使用者
+// 看到的永遠是節點視角的真實絕對路徑.
+//
+// 邏輯刻意極簡: 只認 "/host" 或 "/host/...", 不嘗試處理使用者自訂 prefix
+// (那是 collector/agent 端的責任). 同邏輯在 collector.normalizeCertPath
+// 重複出現是有意的 — 兩處互不依賴, 任一失效時另一處還能保護.
+func stripHostFromCertPath(p string) string {
+	const hostPrefix = "/host"
+	if p == hostPrefix || p == hostPrefix+"/" {
+		return "/"
+	}
+	if strings.HasPrefix(p, hostPrefix+"/") {
+		return p[len(hostPrefix):]
+	}
+	return p
+}
+
+// truncate 以"rune"為單位截斷, 避免把中文字切到一半變成亂碼.
 func truncate(s string, n int) string {
 	rs := []rune(s)
 	if len(rs) <= n {
