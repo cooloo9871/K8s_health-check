@@ -18,6 +18,7 @@ func TestSmokeRenderTC(t *testing.T) {
 	r := &model.Report{
 		GeneratedAt: now,
 		Cluster: model.ClusterInfo{
+			Name: "lab-east-1", NameSource: "kubeadm",
 			Version: "v1.29.4", Platform: "linux/amd64",
 			NodeCount: 5, NamespaceCnt: 12, TotalPods: 87,
 			Distribution: "k8s",
@@ -37,13 +38,38 @@ func TestSmokeRenderTC(t *testing.T) {
 			{Name: "node-1", CPUPercent: 45, CPUUsed: "1800m", CPUCapacity: "4000m", MemPercent: 62, MemUsed: "5 GiB", MemCapacity: "8 GiB", PodCount: 12, PodCapacity: 110},
 			{Name: "node-2", CPUPercent: 88, CPUUsed: "3500m", CPUCapacity: "4000m", MemPercent: 92, MemUsed: "7.4 GiB", MemCapacity: "8 GiB", PodCount: 8, PodCapacity: 110},
 		},
-		PodSummary:  model.PodSummary{Total: 87, Running: 80, Pending: 3, Failed: 4},
-		ProblemPods: []model.PodInfo{{Namespace: "app", Name: "api-x", Status: "CrashLoopBackOff", Restarts: 9, Reason: "CrashLoopBackOff"}},
+		PodSummary: model.PodSummary{Total: 87, Running: 80, Pending: 3, Failed: 4},
+		// CrashLoopBackOff Pod 在 K8s 端 Phase 仍為 Running，container 的 waiting
+		// reason 才是 CrashLoopBackOff。以此模擬真實情境，驗證圓餅圖的「異常」
+		// 切片會把這類 Pod 從 Running 中拆出來。
+		ProblemPods: []model.PodInfo{
+			{Namespace: "app", Name: "api-x", Status: "Running", Restarts: 9, Reason: "CrashLoopBackOff", Message: "back-off 5m0s restarting failed container=api"},
+			{Namespace: "kube-system", Name: "img-pull-fail", Status: "Pending", Reason: "ImagePullBackOff", Message: "Back-off pulling image \"foo:bar\""},
+		},
 		Workloads: model.WorkloadSummary{
 			Deployments: model.WorkloadStats{Total: 20, Ready: 18},
 			Unhealthy:   []model.WorkloadIssue{{Kind: "Deployment", Namespace: "app", Name: "api", Desired: 3, Ready: 1, Reason: "PodFailed"}},
 		},
-		Storage:   model.StorageSummary{PVs: 5, PVsBound: 4, PVsFailed: 1, PVCs: 6, PVCsPending: 1, StorageClasses: []string{"default", "fast"}},
+		Storage: model.StorageSummary{
+			PVs: 5, PVsBound: 4, PVsFailed: 1, PVCs: 6, PVCsPending: 1,
+			StorageClasses: []model.StorageClassInfo{
+				{Name: "default", Provisioner: "kubernetes.io/aws-ebs", ReclaimPolicy: "Delete", VolumeBindingMode: "WaitForFirstConsumer", IsDefault: true, PVCount: 3, PVCCount: 2},
+				{Name: "fast", Provisioner: "ebs.csi.aws.com", ReclaimPolicy: "Retain", VolumeBindingMode: "Immediate", PVCount: 2, PVCCount: 4},
+			},
+			PVList: []model.PVDetail{
+				{Name: "pv-data-1", Capacity: "20Gi", AccessModes: "RWO", Status: "Bound", Class: "default", Claim: "app/data"},
+				{Name: "pv-data-2", Capacity: "100Gi", AccessModes: "RWO", Status: "Released", Class: "fast", Claim: "old/data"},
+				{Name: "pv-broken", Capacity: "50Gi", AccessModes: "RWO", Status: "Failed", Class: "fast"},
+			},
+			PVCList: []model.PVCDetail{
+				{Namespace: "app", Name: "data", Status: "Bound", Capacity: "20Gi", Class: "default", Volume: "pv-data-1"},
+				{Namespace: "app", Name: "logs", Status: "Pending", Capacity: "10Gi", Class: "default"},
+				{Namespace: "kube-system", Name: "etcd", Status: "Bound", Capacity: "40Gi", Class: "fast", Volume: "pv-etcd"},
+			},
+			ProblemPVCs: []model.PVCInfo{
+				{Namespace: "app", Name: "logs", Status: "Pending", Capacity: "10Gi", Class: "default"},
+			},
+		},
 		APIHealth: []model.APIHealth{{Endpoint: "/livez", Status: "ok"}, {Endpoint: "/readyz", Status: "fail", Detail: "etcd timeout"}},
 		Certs: []model.CertInfo{
 			{Path: "/etc/kubernetes/pki/apiserver.crt", Subject: "kube-apiserver", NotAfter: now.Add(20 * 24 * time.Hour), DaysLeft: 20, Status: "WARN", Source: "k8s-pki", Node: "node-1"},
@@ -69,7 +95,7 @@ func TestSmokeRenderTC(t *testing.T) {
 		},
 		Events: []model.EventInfo{{LastSeen: now, Reason: "FailedScheduling", Object: "pod/api-x", Namespace: "app", Message: "0/2 nodes available", Count: 5}},
 	}
-	advisor.Analyze(r, "production")
+	advisor.Analyze(r)
 
 	if r.Conclusion.OverallStatus == "" {
 		t.Fatalf("advisor 未產生 OverallStatus")
@@ -101,7 +127,34 @@ func TestSmokeRenderTC(t *testing.T) {
 	if st.Size() < 8192 {
 		t.Fatalf("PDF 大小僅 %d bytes，疑似渲染失敗", st.Size())
 	}
-	t.Logf("smoke PDF %d bytes，環境=%s 整體=%s 發現=%d 建議=%d 節點 agent=%d",
-		st.Size(), r.Conclusion.Environment, r.Conclusion.OverallStatus,
+	t.Logf("smoke PDF %d bytes，叢集=%s 整體=%s 發現=%d 建議=%d 節點 agent=%d",
+		st.Size(), r.Cluster.Name, r.Conclusion.OverallStatus,
 		len(r.Conclusion.Findings), len(r.Conclusion.Recommendations), len(r.NodeAgents))
+}
+
+// TestIsSelfFiltersHealthcheckPods 確認 isSelf 會把 namespace 內所有
+// k8s-healthcheck-* Pod (agent + aggregator) 都濾掉。
+// 這是 collector 套件的功能，但放在 report 套件的測試裡會跨套件 import 麻煩，
+// 因此實際測試在 collector 套件內 (見 collector/agents_test.go 若有)，這裡
+// 僅以註解保留設計意圖。
+
+// TestRenderEmptyCerts 模擬 cluster 完全沒有憑證資料的情境，
+// 用來防止 charts.go 的「無憑證」fallback 用到未註冊的字型 style (例如 Italic)。
+func TestRenderEmptyCerts(t *testing.T) {
+	r := &model.Report{
+		GeneratedAt: time.Now(),
+		Cluster: model.ClusterInfo{
+			Name: "test-no-certs", Version: "v1.29",
+			NodeCount: 1, Distribution: "k8s",
+		},
+		Nodes: []model.NodeInfo{
+			{Name: "n", Status: "Ready", Conditions: []model.NodeCondition{{Type: "Ready", Status: "True"}}},
+		},
+		PodSummary: model.PodSummary{Total: 1, Running: 1},
+	}
+	advisor.Analyze(r)
+	dir := t.TempDir()
+	if err := WritePDF(r, filepath.Join(dir, "no-certs.pdf")); err != nil {
+		t.Fatalf("WritePDF empty-certs: %v", err)
+	}
 }

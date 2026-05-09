@@ -25,10 +25,19 @@ type Collector struct {
 	restCfg   *rest.Config
 	pkiDir    string
 
-	// 自身識別。用來把 collector 本身的 Pod 從報告裡濾掉，避免
-	// 在 ProblemPods / TopCPU / TopMemory / Events 等區段中露出。
+	// 自身識別。用來把 collector 本身與所有 k8s-healthcheck-* 系統 Pod
+	// 從報告裡濾掉，避免出現在 ProblemPods / TopCPU / TopMemory / Events
+	// 等區段中。
 	selfNamespace string
 	selfName      string
+
+	// HealthcheckNamespace 是整個 k8s-healthcheck 系統部署的 namespace。
+	// 該 namespace 下名稱以 k8s-healthcheck 開頭的所有 Pod 都會被視為
+	// 自身基礎設施而從報告中排除。
+	healthcheckNamespace string
+
+	// 使用者透過 --cluster-name 指定的 cluster 識別字串，空字串表示自動偵測。
+	clusterName string
 
 	// AgentDiscovery 為 DaemonSet 模式下找尋 agent Pod 的設定。
 	// 若 LabelSelector 為空 (零值) 表示不啟用 agent 收集，行為退回單機模式。
@@ -63,14 +72,41 @@ func New(kubeconfig, pkiDir string) (*Collector, error) {
 		log.Printf("self-pod identified as %s/%s (將從報告中排除)", ns, name)
 	}
 
+	hcNS := ns
+	if hcNS == "" {
+		hcNS = "k8s-healthcheck"
+	}
+
 	return &Collector{
-		clientset:     cs,
-		metrics:       mc,
-		restCfg:       cfg,
-		pkiDir:        pkiDir,
-		selfNamespace: ns,
-		selfName:      name,
+		clientset:            cs,
+		metrics:              mc,
+		restCfg:              cfg,
+		pkiDir:               pkiDir,
+		selfNamespace:        ns,
+		selfName:             name,
+		healthcheckNamespace: hcNS,
 	}, nil
+}
+
+// SetClusterName 由呼叫端 (main.go) 注入使用者指定的 cluster name。
+// 空字串表示交由 detectClusterName 自動偵測。
+func (c *Collector) SetClusterName(name string) {
+	c.clusterName = strings.TrimSpace(name)
+}
+
+// SelfPod 回傳 collector 自身偵測到的 (namespace, name)。在 cluster 內透過
+// downward API 環境變數或 service account token 取得；本機跑可能為空字串。
+// 主要給 main.go 印「kubectl cp」教學用。
+func (c *Collector) SelfPod() (namespace, name string) {
+	return c.selfNamespace, c.selfName
+}
+
+// SetHealthcheckNamespace 由呼叫端覆寫 healthcheck 系統 Pod 所在的 namespace
+// (預設取自 selfNamespace 或 "k8s-healthcheck")。在本機開發 / 測試時可以指定。
+func (c *Collector) SetHealthcheckNamespace(ns string) {
+	if ns = strings.TrimSpace(ns); ns != "" {
+		c.healthcheckNamespace = ns
+	}
 }
 
 // detectSelf 嘗試找出 collector 自己的 Pod 名稱與 namespace。
@@ -93,16 +129,22 @@ func detectSelf() (namespace, name string) {
 	return namespace, name
 }
 
-// isSelf 判斷一個 (namespace, name) 是否就是 collector 本身。
-// 若 selfName 偵測不到（例如本機跑），永遠回 false 不過濾。
+// isSelf 判斷某個 (namespace, name) 是否屬於 k8s-healthcheck 系統 Pod
+// (應該從報告中排除)。
+//
+// 規則: namespace 等於 healthcheckNamespace，且 name 以 "k8s-healthcheck"
+// 開頭。涵蓋所有元件:
+//   - k8s-healthcheck-aggregator-<rs>-<id>  (Deployment)
+//   - k8s-healthcheck-agent-<id>            (DaemonSet)
+//   - k8s-healthcheck                       (舊版單機 Pod)
+//
+// 即使 selfName 偵測不到 (例如本機 kubeconfig 跑) 也仍會過濾，避免叢集裡
+// 真的有部署 healthcheck 系統時自我汙染。
 func (c *Collector) isSelf(namespace, name string) bool {
-	if c.selfName == "" {
+	if namespace != c.healthcheckNamespace {
 		return false
 	}
-	if namespace != c.selfNamespace {
-		return false
-	}
-	return name == c.selfName
+	return strings.HasPrefix(name, "k8s-healthcheck")
 }
 
 func loadConfig(kubeconfig string) (*rest.Config, error) {

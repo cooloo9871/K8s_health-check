@@ -81,8 +81,11 @@ func (c *Collector) collectAgents(ctx context.Context, r *model.Report, disc Age
 		if p.Status.Phase != corev1.PodRunning || p.Status.PodIP == "" {
 			continue
 		}
-		// 排除 collector 自己 (理論上 aggregator 與 agent 不同 Pod，但保險起見)。
-		if c.isSelf(p.Namespace, p.Name) {
+		// 排除 aggregator 自己 (label selector 通常已經分開，但極端情況下
+		// 例如 ad-hoc 跑同一 Pod 兩次，仍以精確 namespace+name 過濾一次)。
+		// 注意: 不能用 isSelf，因為 isSelf 會把 namespace 內所有 k8s-healthcheck-*
+		// Pod 都當成「自身基礎設施」，那會把 agent 本身也過濾掉。
+		if c.selfName != "" && p.Namespace == c.selfNamespace && p.Name == c.selfName {
 			continue
 		}
 		ip := p.Status.PodIP

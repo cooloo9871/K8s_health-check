@@ -107,32 +107,122 @@ func tableHeader(pdf *gofpdf.Fpdf, widths []float64, headers []string) {
 	pdf.SetFillColor(220, 230, 245)
 	pdf.SetFont(fontFamily, "B", 9)
 	for i, h := range headers {
-		pdf.CellFormat(widths[i], 6, h, "1", 0, "L", true, 0, "")
+		pdf.CellFormat(widths[i], 6, fit(pdf, h, widths[i]), "1", 0, "L", true, 0, "")
 	}
 	pdf.Ln(-1)
 	pdf.SetFont(fontFamily, "", 8)
 }
 
 // tableRow 畫一列資料；fill 為 true 時填淡藍色背景，做斑馬條紋效果。
+// 過長的內容會自動換行 (而非截斷)，row 高度依最長那格的行數動態調整。
 func tableRow(pdf *gofpdf.Fpdf, widths []float64, cells []string, fill bool) {
-	if pdf.GetY() > 270 {
-		pdf.AddPage()
-	}
 	if fill {
-		pdf.SetFillColor(245, 247, 252)
+		multiCellRow(pdf, widths, cells, 245, 247, 252)
 	} else {
-		pdf.SetFillColor(255, 255, 255)
+		multiCellRow(pdf, widths, cells, 255, 255, 255)
 	}
-	for i, c := range cells {
-		pdf.CellFormat(widths[i], 5.5, c, "1", 0, "L", true, 0, "")
-	}
-	pdf.Ln(-1)
 }
 
-// kv 印出「key 粗體: value」的 key-value 格式。
+// 表格內格距與行高常數。lineH=4.5 + padV=0.5 → 單行 row 高 5.5 (與舊版相容)。
+const (
+	tableLineH = 4.5
+	tableCellPadV = 0.5
+	tableCellPadH = 0.7
+)
+
+// multiCellRow 畫一列可自動換行的表格資料。流程:
+//  1. 先用 SplitText 量測每格在欄寬內會被切成幾行，取最大值決定 row 高
+//  2. 若超出底邊就先 AddPage
+//  3. 為每一格畫 fill+border 的矩形；再以 MultiCell 寫入文字 (不再加邊框)
+//  4. 結束時把游標重置到下一列起始 (左邊界, y+rowH)
+func multiCellRow(pdf *gofpdf.Fpdf, widths []float64, cells []string, fillR, fillG, fillB int) {
+	// 量測每格行數
+	maxLines := 1
+	for i, c := range cells {
+		innerW := widths[i] - 2*tableCellPadH
+		if innerW < 1 {
+			innerW = 1
+		}
+		n := countWrapLines(pdf, c, innerW)
+		if n > maxLines {
+			maxLines = n
+		}
+	}
+	rowH := float64(maxLines)*tableLineH + 2*tableCellPadV
+
+	// 換頁判斷: 用 PageHeight - bottom margin (與 SetAutoPageBreak 一致 = 14mm)
+	_, ph := pdf.GetPageSize()
+	if pdf.GetY()+rowH > ph-14 {
+		pdf.AddPage()
+	}
+
+	leftX := pdf.GetX()
+	y := pdf.GetY()
+
+	pdf.SetFillColor(fillR, fillG, fillB)
+	pdf.SetDrawColor(0, 0, 0)
+
+	x := leftX
+	for i, c := range cells {
+		// 邊框 + 填色背景
+		pdf.Rect(x, y, widths[i], rowH, "FD")
+		// 寫入文字 (MultiCell 自動換行，不再加邊框與填色)
+		innerW := widths[i] - 2*tableCellPadH
+		pdf.SetXY(x+tableCellPadH, y+tableCellPadV)
+		pdf.MultiCell(innerW, tableLineH, c, "", "L", false)
+		x += widths[i]
+	}
+
+	// 把游標放到下一列開頭，讓下次 tableRow 直接接上去
+	pdf.SetXY(leftX, y+rowH)
+}
+
+// countWrapLines 利用 gofpdf.SplitText 估算 text 在 width 寬欄位內換行後
+// 會佔多少行，至少回傳 1。空字串視為 1 行 (保留版面對齊)。
+func countWrapLines(pdf *gofpdf.Fpdf, text string, width float64) int {
+	if text == "" {
+		return 1
+	}
+	lines := pdf.SplitText(text, width)
+	if len(lines) == 0 {
+		return 1
+	}
+	return len(lines)
+}
+
+// fit 把字串縮短到實際寬度不超過 maxWidth，超過時在尾端接上 "..."。
+// 用 PDF 自身的 GetStringWidth 量測，依目前字型字級實際寬度判斷，比起按
+// 字數截斷更精準 (中英混排寬度差很多)。
+func fit(pdf *gofpdf.Fpdf, s string, maxWidth float64) string {
+	const padding = 1.5 // mm，避免貼齊邊界產生毛邊
+	target := maxWidth - padding
+	if target <= 0 || s == "" {
+		return s
+	}
+	if pdf.GetStringWidth(s) <= target {
+		return s
+	}
+	const suffix = "..."
+	suffixW := pdf.GetStringWidth(suffix)
+	if suffixW > target {
+		// 連 "..." 都塞不下時直接回空字串
+		return ""
+	}
+	rs := []rune(s)
+	for n := len(rs) - 1; n > 0; n-- {
+		candidate := string(rs[:n])
+		if pdf.GetStringWidth(candidate)+suffixW <= target {
+			return candidate + suffix
+		}
+	}
+	return suffix
+}
+
+// kv 印出「key 粗體: value」的 key-value 格式。key 寬固定 50mm 會被 fit
+// 截斷；value 用 MultiCell 自動換行不必截斷。
 func kv(pdf *gofpdf.Fpdf, k, v string) {
 	pdf.SetFont(fontFamily, "B", 10)
-	pdf.CellFormat(50, 6, k, "", 0, "L", false, 0, "")
+	pdf.CellFormat(50, 6, fit(pdf, k, 50), "", 0, "L", false, 0, "")
 	pdf.SetFont(fontFamily, "", 10)
 	pdf.MultiCell(0, 6, v, "", "L", false)
 }
@@ -148,6 +238,28 @@ func safe(s string) string {
 	return s
 }
 
+// clusterLabel 把 cluster name + 來源 (kubeadm / uid / flag / unknown) 組合
+// 成易讀的字串。例如 "prod-east (kubeadm)"。
+func clusterLabel(r *model.Report) string {
+	name := r.Cluster.Name
+	if name == "" {
+		name = "unknown"
+	}
+	src := r.Cluster.NameSource
+	switch src {
+	case "flag":
+		return name + " (使用者指定)"
+	case "kubeadm":
+		return name + " (kubeadm-config)"
+	case "uid":
+		return name + " (kube-system UID)"
+	case "", "unknown":
+		return name
+	default:
+		return fmt.Sprintf("%s (%s)", name, src)
+	}
+}
+
 // ----- 封面 -----------------------------------------------------------
 
 func renderCover(pdf *gofpdf.Fpdf, r *model.Report) {
@@ -159,21 +271,14 @@ func renderCover(pdf *gofpdf.Fpdf, r *model.Report) {
 	pdf.Ln(10)
 
 	pdf.SetFont(fontFamily, "", 12)
+	pdf.CellFormat(0, 8, fmt.Sprintf("叢集名稱: %s", clusterLabel(r)),
+		"", 1, "C", false, 0, "")
 	pdf.CellFormat(0, 8, fmt.Sprintf("產生時間: %s", tz.In(r.GeneratedAt).Format("2006-01-02 15:04:05 MST")),
 		"", 1, "C", false, 0, "")
 	pdf.CellFormat(0, 8, fmt.Sprintf("發行版本: %s", strings.ToUpper(safe(r.Cluster.Distribution))),
 		"", 1, "C", false, 0, "")
 	pdf.CellFormat(0, 8, fmt.Sprintf("Kubernetes 版本: %s", safe(r.Cluster.Version)),
 		"", 1, "C", false, 0, "")
-	if r.Conclusion.Environment != "" {
-		envLabel := r.Conclusion.Environment
-		if r.Conclusion.EnvironmentAuto {
-			envLabel += " (自動判定)"
-		} else {
-			envLabel += " (指定)"
-		}
-		pdf.CellFormat(0, 8, "環境: "+envLabel, "", 1, "C", false, 0, "")
-	}
 	pdf.Ln(20)
 
 	// 重點摘要 (簡易計分板)
@@ -182,7 +287,6 @@ func renderCover(pdf *gofpdf.Fpdf, r *model.Report) {
 	pdf.SetFont(fontFamily, "", 11)
 	rows := [][2]string{
 		{"節點數", fmt.Sprintf("%d", r.Cluster.NodeCount)},
-		{"DaemonSet agent 回報節點", fmt.Sprintf("%d", len(r.NodeAgents))},
 		{"Namespace 數", fmt.Sprintf("%d", r.Cluster.NamespaceCnt)},
 		{"Pod 總數", fmt.Sprintf("%d", r.Cluster.TotalPods)},
 		{"Running Pod", fmt.Sprintf("%d", r.PodSummary.Running)},
@@ -261,18 +365,12 @@ func renderConclusion(pdf *gofpdf.Fpdf, r *model.Report) {
 		tableHeader(pdf, widths, []string{"嚴重度", "類別", "標題", "說明"})
 		for i, f := range r.Conclusion.Findings {
 			fr, fg, fb := severityFill(f.Severity)
-			if pdf.GetY() > 265 {
-				pdf.AddPage()
+			if i%2 == 1 {
+				fr, fg, fb = min255(fr+8), min255(fg+8), min255(fb+8)
 			}
-			if i%2 == 0 {
-				pdf.SetFillColor(fr, fg, fb)
-			} else {
-				pdf.SetFillColor(min255(fr+8), min255(fg+8), min255(fb+8))
-			}
-			pdf.CellFormat(widths[0], 5.5, f.Severity, "1", 0, "L", true, 0, "")
-			pdf.CellFormat(widths[1], 5.5, f.Category, "1", 0, "L", true, 0, "")
-			pdf.CellFormat(widths[2], 5.5, f.Title, "1", 0, "L", true, 0, "")
-			pdf.CellFormat(widths[3], 5.5, f.Detail, "1", 1, "L", true, 0, "")
+			multiCellRow(pdf, widths,
+				[]string{f.Severity, f.Category, f.Title, f.Detail},
+				fr, fg, fb)
 		}
 	}
 	pdf.Ln(3)
@@ -286,18 +384,12 @@ func renderConclusion(pdf *gofpdf.Fpdf, r *model.Report) {
 	tableHeader(pdf, widths, []string{"優先級", "類別", "建議動作", "原因"})
 	for i, rec := range r.Conclusion.Recommendations {
 		pr, pg, pb := priorityFill(rec.Priority)
-		if pdf.GetY() > 265 {
-			pdf.AddPage()
+		if i%2 == 1 {
+			pr, pg, pb = min255(pr+8), min255(pg+8), min255(pb+8)
 		}
-		if i%2 == 0 {
-			pdf.SetFillColor(pr, pg, pb)
-		} else {
-			pdf.SetFillColor(min255(pr+8), min255(pg+8), min255(pb+8))
-		}
-		pdf.CellFormat(widths[0], 5.5, rec.Priority, "1", 0, "L", true, 0, "")
-		pdf.CellFormat(widths[1], 5.5, rec.Category, "1", 0, "L", true, 0, "")
-		pdf.CellFormat(widths[2], 5.5, rec.Action, "1", 0, "L", true, 0, "")
-		pdf.CellFormat(widths[3], 5.5, rec.Rationale, "1", 1, "L", true, 0, "")
+		multiCellRow(pdf, widths,
+			[]string{rec.Priority, rec.Category, rec.Action, rec.Rationale},
+			pr, pg, pb)
 	}
 }
 
@@ -326,10 +418,23 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 	pdf.SetXY(105, yTop)
 	subTitle(pdf, "憑證到期分佈 (剩餘天數)")
 
-	// 圓餅: 圓心 (45,yTop+30)，半徑 22；圖例放在右側 (75,yTop+10)
+	// CrashLoopBackOff / 重啟過多 / 容器未 Ready 的 Pod 在 K8s 階段上仍是
+	// Running，但其實處於異常狀態。把這類從 Running 切片中拆出來，獨立顯示
+	// 為紅色「異常」切片，使用者才能在圓餅上看到 crash 影響。
+	problemRunning := 0
+	for _, p := range r.ProblemPods {
+		if strings.EqualFold(p.Status, "Running") {
+			problemRunning++
+		}
+	}
 	s := r.PodSummary
+	healthyRunning := s.Running - problemRunning
+	if healthyRunning < 0 {
+		healthyRunning = 0
+	}
 	pieSlices := []Slice{
-		{Label: "Running", Value: float64(s.Running), R: 50, G: 140, B: 70},
+		{Label: "Running (健康)", Value: float64(healthyRunning), R: 50, G: 140, B: 70},
+		{Label: "異常 (Crash/重啟)", Value: float64(problemRunning), R: 220, G: 80, B: 60},
 		{Label: "Pending", Value: float64(s.Pending), R: 240, G: 160, B: 30},
 		{Label: "Failed", Value: float64(s.Failed), R: 198, G: 40, B: 40},
 		{Label: "Succeeded", Value: float64(s.Succeeded), R: 110, G: 130, B: 200},
@@ -381,15 +486,15 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 	pdf.Ln(2)
 
-	subTitle(pdf, "節點 root 磁碟使用率")
+	subTitle(pdf, "節點各掛點磁碟使用率")
 	if len(r.NodeAgents) == 0 {
 		note(pdf, "未部署 DaemonSet agent；以 --mode=agent 啟動 DaemonSet 後重跑可呈現此圖。")
 	} else {
-		bars := nodeRootDiskBars(r.NodeAgents)
+		bars := allNodeDiskBars(r.NodeAgents)
 		if len(bars) == 0 {
-			note(pdf, "agent 回報資料中無 / 掛點 (可能未掛 hostPath)。")
+			note(pdf, "agent 回報資料中無任何掛點 (可能未掛 hostPath)。")
 		} else {
-			drawHorizBars(pdf, 12, pdf.GetY()+1, 186, 5.5, 36, 70, bars)
+			drawHorizBars(pdf, 12, pdf.GetY()+1, 186, 5.5, 60, 60, bars)
 		}
 	}
 }
@@ -435,27 +540,20 @@ func buildCertBins(certs []model.CertInfo) []HistBin {
 	return bins
 }
 
-// nodeRootDiskBars 從每個 agent 的回報中找 "/" 掛點，做成水平條。
-func nodeRootDiskBars(nas []model.NodeAgentData) []HorizBar {
-	out := make([]HorizBar, 0, len(nas))
+// allNodeDiskBars 把每個 agent 回報的「所有掛點」攤平成水平條。
+// 標籤格式為 "<node>  <掛點>"，依使用率由高到低排序，方便一眼看到最緊迫的。
+func allNodeDiskBars(nas []model.NodeAgentData) []HorizBar {
+	out := make([]HorizBar, 0)
 	for _, na := range nas {
-		var root *model.DiskInfo
-		for i := range na.Disks {
-			if na.Disks[i].MountPoint == "/" {
-				root = &na.Disks[i]
-				break
-			}
+		for _, d := range na.Disks {
+			out = append(out, HorizBar{
+				Label:   fmt.Sprintf("%s  %s", na.NodeName, d.MountPoint),
+				Value:   d.Percent,
+				Max:     100,
+				Display: fmt.Sprintf("%.1f%%  (%s / %s)", d.Percent, humanBytes(d.Used), humanBytes(d.Total)),
+				Status:  d.Status,
+			})
 		}
-		if root == nil {
-			continue
-		}
-		out = append(out, HorizBar{
-			Label:   na.NodeName,
-			Value:   root.Percent,
-			Max:     100,
-			Display: fmt.Sprintf("%.1f%%  (%s 已用 / %s)", root.Percent, humanBytes(root.Used), humanBytes(root.Total)),
-			Status:  root.Status,
-		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Value > out[j].Value })
 	return out
@@ -485,6 +583,7 @@ func humanBytes(b uint64) string {
 func renderClusterOverview(pdf *gofpdf.Fpdf, r *model.Report) {
 	pdf.AddPage()
 	sectionTitle(pdf, "2. 叢集總覽")
+	kv(pdf, "叢集名稱", clusterLabel(r))
 	kv(pdf, "Kubernetes 版本", safe(r.Cluster.Version))
 	kv(pdf, "平台", safe(r.Cluster.Platform))
 	kv(pdf, "發行版本標籤", safe(r.Cluster.Distribution))
@@ -682,41 +781,77 @@ func renderWorkloads(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 }
 
+// renderStorage 把儲存章節整合成「StorageClasses + PV 詳情 + PVC 詳情」三段，
+// 各自帶上各階段計數的 subtitle，避免與舊版重複出現「概覽計數表 + 詳細表」。
 func renderStorage(pdf *gofpdf.Fpdf, r *model.Report) {
 	sectionTitle(pdf, "10. 儲存")
 	s := r.Storage
-	widths := []float64{60, 30, 30, 30, 30}
-	tableHeader(pdf, widths, []string{"PersistentVolumes", "Bound", "Available", "Released", "Failed"})
-	tableRow(pdf, widths, []string{
-		fmt.Sprintf("%d", s.PVs),
-		fmt.Sprintf("%d", s.PVsBound),
-		fmt.Sprintf("%d", s.PVsAvailable),
-		fmt.Sprintf("%d", s.PVsReleased),
-		fmt.Sprintf("%d", s.PVsFailed),
-	}, true)
-	pdf.Ln(2)
-	w2 := []float64{60, 30, 30}
-	tableHeader(pdf, w2, []string{"PersistentVolumeClaims", "Bound", "Pending"})
-	tableRow(pdf, w2, []string{
-		fmt.Sprintf("%d", s.PVCs),
-		fmt.Sprintf("%d", s.PVCsBound),
-		fmt.Sprintf("%d", s.PVCsPending),
-	}, true)
 
-	if len(s.StorageClasses) > 0 {
-		pdf.Ln(2)
-		subTitle(pdf, "Storage Classes")
-		pdf.SetFont(fontFamily, "", 9)
-		pdf.MultiCell(0, 5, strings.Join(s.StorageClasses, ", "), "", "L", false)
+	// === StorageClass 詳細表 ===
+	subTitle(pdf, fmt.Sprintf("Storage Classes (共 %d 個)", len(s.StorageClasses)))
+	if len(s.StorageClasses) == 0 {
+		note(pdf, "未偵測到 StorageClass。")
+	} else {
+		w := []float64{50, 60, 24, 30, 12, 12}
+		tableHeader(pdf, w, []string{"名稱", "Provisioner", "Reclaim", "Binding 模式", "PV", "PVC"})
+		for i, sc := range s.StorageClasses {
+			name := sc.Name
+			if sc.IsDefault {
+				name += " *"
+			}
+			tableRow(pdf, w, []string{
+				name,
+				sc.Provisioner,
+				sc.ReclaimPolicy,
+				sc.VolumeBindingMode,
+				fmt.Sprintf("%d", sc.PVCount),
+				fmt.Sprintf("%d", sc.PVCCount),
+			}, i%2 == 0)
+		}
+		note(pdf, "* 表示 default StorageClass。")
 	}
 
-	if len(s.ProblemPVCs) > 0 {
-		pdf.Ln(2)
-		subTitle(pdf, "Pending / 異常 PVC")
-		w3 := []float64{30, 60, 22, 30, 30}
-		tableHeader(pdf, w3, []string{"Namespace", "名稱", "狀態", "容量", "Class"})
-		for i, p := range s.ProblemPVCs {
-			tableRow(pdf, w3, []string{p.Namespace, p.Name, p.Status, p.Capacity, p.Class}, i%2 == 0)
+	// === PersistentVolumes 詳情 (含階段彙總) ===
+	pdf.Ln(3)
+	subTitle(pdf, fmt.Sprintf(
+		"PersistentVolumes (共 %d / Bound %d / Available %d / Released %d / Failed %d)",
+		s.PVs, s.PVsBound, s.PVsAvailable, s.PVsReleased, s.PVsFailed))
+	if len(s.PVList) == 0 {
+		note(pdf, "未偵測到 PV。")
+	} else {
+		w := []float64{56, 22, 16, 24, 50, 20}
+		tableHeader(pdf, w, []string{"名稱", "容量", "存取", "StorageClass", "Claim", "狀態"})
+		for i, pv := range s.PVList {
+			tableRow(pdf, w, []string{
+				pv.Name,
+				pv.Capacity,
+				pv.AccessModes,
+				safe(pv.Class),
+				safe(pv.Claim),
+				pv.Status,
+			}, i%2 == 0)
+		}
+	}
+
+	// === PersistentVolumeClaims 詳情 (含階段彙總) ===
+	pdf.Ln(3)
+	subTitle(pdf, fmt.Sprintf(
+		"PersistentVolumeClaims (共 %d / Bound %d / Pending %d)",
+		s.PVCs, s.PVCsBound, s.PVCsPending))
+	if len(s.PVCList) == 0 {
+		note(pdf, "未偵測到 PVC。")
+	} else {
+		w := []float64{30, 50, 18, 22, 24, 44}
+		tableHeader(pdf, w, []string{"Namespace", "名稱", "容量", "狀態", "StorageClass", "綁定 PV"})
+		for i, p := range s.PVCList {
+			tableRow(pdf, w, []string{
+				p.Namespace,
+				p.Name,
+				p.Capacity,
+				p.Status,
+				safe(p.Class),
+				safe(p.Volume),
+			}, i%2 == 0)
 		}
 	}
 }

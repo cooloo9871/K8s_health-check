@@ -200,7 +200,8 @@ func drawHistogram(pdf *gofpdf.Fpdf, x, y, w, h float64, bins []HistBin) {
 		}
 	}
 	if maxCount == 0 {
-		pdf.SetFont(fontFamily, "I", 9)
+		// 沒有任何憑證資料: 用 Regular 字型 (我們只 embed Regular + Bold, 沒有 Italic)
+		pdf.SetFont(fontFamily, "", 9)
 		pdf.SetTextColor(120, 120, 120)
 		pdf.Text(x, y+h/2, "無憑證資料")
 		pdf.SetTextColor(0, 0, 0)
@@ -225,10 +226,8 @@ func drawHistogram(pdf *gofpdf.Fpdf, x, y, w, h float64, bins []HistBin) {
 		by := y + plotH - barH
 		pdf.SetFillColor(b.R, b.G, b.B)
 		pdf.Rect(bx, by, colW, barH, "F")
-		// 數值在柱子上方
+		// 數值置中於柱頂上方 (用 SetXY 鎖定位置再 CellFormat)。
 		pdf.SetTextColor(40, 40, 40)
-		pdf.CellFormat(colW, 4, fmt.Sprintf("%d", b.Count), "", 0, "C", false, 0, "")
-		// CellFormat 會推進游標，但我們不是用 cell 流程畫的，只是想置中 -> 改用 Text 計算
 		pdf.SetXY(bx, by-4.5)
 		pdf.CellFormat(colW, 4, fmt.Sprintf("%d", b.Count), "", 0, "C", false, 0, "")
 		// 底部標籤

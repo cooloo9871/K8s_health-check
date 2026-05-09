@@ -1,25 +1,37 @@
 # ============================================================================
-# k8s-healthcheck: 完整部署 (DaemonSet agent + Deployment aggregator + RBAC)
+# k8s-healthcheck: CronJob 短命架構
 #
-# 架構:
-#   - agent  : 以 DaemonSet 部署於每個節點，提供 :8080/data HTTP 端點，
-#              回傳該節點的磁碟、kubelet 憑證、k8s pki 憑證。
-#   - aggregator: 以 Deployment 部署 (1 副本)，從 cluster API 抓全 cluster
-#                 資料，並透過 Pod 列舉拉取每個 agent 的 /data，整合後
-#                 寫出繁體中文 PDF。
+# 流程:
+#   1. CronJob 依 schedule 觸發 (預設 08:00 每日)
+#   2. Job 啟動單一 Pod (k8s-healthcheck-runner)
+#   3. Runner Pod 用 client-go 動態建立 agent DaemonSet
+#   4. Runner 等所有 agent Ready 後 HTTP 取資料
+#   5. Runner 寫 PDF 到 emptyDir，並刪除 agent DaemonSet
+#   6. Runner 進入 --sleep-after 待機，期間使用者可 kubectl cp 取 PDF
+#   7. CronJob 下次觸發以 concurrencyPolicy: Replace 取代仍在待機的舊 Job
+#
+# 執行時 cluster 中暫存資源:
+#   - 1 個 Job 與其 1 個 Runner Pod  (一次性，由 CronJob 派生)
+#   - 1 個短命 DaemonSet 與每節點 1 個 agent Pod (Runner 工作期間存在，產 PDF
+#     後立即被 Runner 刪除)
 #
 # 用法:
+#   # 部署 (建立 ServiceAccount + RBAC + CronJob，但暫不會真的跑)
 #   kubectl apply -f deploy/all-in-one.yaml
 #
-#   # 等 agent 就緒
-#   kubectl -n k8s-healthcheck rollout status ds/k8s-healthcheck-agent
+#   # 立即觸發一輪 (不等排程)。NAME 必須放在 --from 之前。
+#   kubectl -n k8s-healthcheck create job k8s-healthcheck-manual-$(date +%s) \
+#     --from=cronjob/k8s-healthcheck
 #
-#   # 觀察 aggregator 產出
-#   kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck-aggregator -f
+#   # 看 runner 進度
+#   kubectl -n k8s-healthcheck logs -l job-name -f --tail=200
 #
-#   # 把 PDF 拉下來
-#   POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-aggregator -o jsonpath='{.items[0].metadata.name}')
-#   kubectl -n k8s-healthcheck cp "${POD}:/reports" ./reports
+#   # 取 PDF (在 runner 進入 sleep-after 視窗內)
+#   POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-runner \
+#         --field-selector=status.phase=Running \
+#         -o jsonpath='{.items[0].metadata.name}')
+#   PDF=$(kubectl -n k8s-healthcheck exec "${POD}" -- ls /reports | head -1)
+#   kubectl -n k8s-healthcheck cp "${POD}:/reports/${PDF}" "./${PDF}"
 # ============================================================================
 
 ---
@@ -33,15 +45,17 @@ kind: ServiceAccount
 metadata:
   name: k8s-healthcheck
   namespace: k8s-healthcheck
+
+# ----------------------------------------------------------------------------
+# RBAC: 讀全 cluster 健康資料 + 在自己 namespace 建/刪 DaemonSet
+# ----------------------------------------------------------------------------
 ---
-# 因為要列舉跨 namespace 的資源 (nodes, PVs, all-namespace pods, ...) 故用
-# ClusterRole。aggregator 需要讀本 namespace 的 Pod 才能找到 agent。
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: k8s-healthcheck-reader
 rules:
-  # 核心叢集狀態
+  # 核心叢集狀態 (read-only)
   - apiGroups: [""]
     resources:
       - nodes
@@ -58,7 +72,7 @@ rules:
   - apiGroups: [""]
     resources: ["nodes/proxy"]
     verbs: ["get"]
-  # 工作負載
+  # 工作負載 (read-only)
   - apiGroups: ["apps"]
     resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
     verbs: ["get", "list"]
@@ -96,195 +110,127 @@ subjects:
   - kind: ServiceAccount
     name: k8s-healthcheck
     namespace: k8s-healthcheck
+---
+# Runner 需要在 k8s-healthcheck namespace 建/刪 agent DaemonSet。
+# 用 (namespaced) Role + RoleBinding 而非 ClusterRole，把寫權限限縮在
+# 本 ns，符合最小權限原則。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-healthcheck-orchestrate
+  namespace: k8s-healthcheck
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # 也允許列舉本 ns Pod 以做 self-filter / agent 抓取
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-healthcheck-orchestrate
+  namespace: k8s-healthcheck
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: k8s-healthcheck-orchestrate
+subjects:
+  - kind: ServiceAccount
+    name: k8s-healthcheck
+    namespace: k8s-healthcheck
 
 # ----------------------------------------------------------------------------
-# DaemonSet: 在每個節點上跑一個 agent，採磁碟 + 各類憑證
+# CronJob: 排程觸發 Runner Pod。Runner 內部會動態建立 / 刪除 agent DaemonSet。
 # ----------------------------------------------------------------------------
 ---
-apiVersion: apps/v1
-kind: DaemonSet
+apiVersion: batch/v1
+kind: CronJob
 metadata:
-  name: k8s-healthcheck-agent
+  name: k8s-healthcheck
   namespace: k8s-healthcheck
   labels:
-    app: k8s-healthcheck-agent
+    app: k8s-healthcheck-runner
 spec:
-  selector:
-    matchLabels:
-      app: k8s-healthcheck-agent
-  template:
+  # 預設 08:00 (台灣時間) 每日執行一次。改 schedule 即可調整頻率。
+  schedule: "0 0 * * *"   # UTC 00:00 = 台灣時間 08:00
+  timeZone: "Asia/Taipei"
+  # 若上一輪還在 sleep-after 待機就觸發新的，直接 Replace 老 Job (連 Pod 一併殺)。
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  # CronJob 觸發後晚於 5 分鐘才被 controller 看到就跳過 (避免時鐘飄移補跑)。
+  startingDeadlineSeconds: 300
+  jobTemplate:
     metadata:
       labels:
-        app: k8s-healthcheck-agent
+        app: k8s-healthcheck-runner
     spec:
-      serviceAccountName: k8s-healthcheck
-      # 容忍所有 taint，讓 agent 能落到包含 control-plane 在內的所有節點。
-      tolerations:
-        - operator: Exists
-      # 不啟用 hostNetwork: 維持 Pod 自有 IP 以便 aggregator HTTP 連線。
-      securityContext:
-        # agent 需要讀 /etc/kubernetes/pki 與 /var/lib/kubelet/pki 內 0600
-        # 權限的私鑰配對檔，最簡單的做法是用 UID 0；同時 drop 所有 cap、
-        # 啟用 readOnlyRootFilesystem，確保不會因此擴大攻擊面。
-        runAsUser: 0
-        runAsGroup: 0
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: agent
-          image: quay.io/cooloo9871/k8s-hk:latest
-          imagePullPolicy: Always
-          args:
-            - --mode=agent
-            - --listen=:8080
-            - --host-prefix=/host
-          env:
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 10
-            timeoutSeconds: 2
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            periodSeconds: 20
-            timeoutSeconds: 3
-          resources:
-            requests:
-              cpu: 25m
-              memory: 48Mi
-            limits:
-              cpu: 200m
-              memory: 128Mi
-          volumeMounts:
-            # 整顆 host root 唯讀掛入 /host，agent 會自己挑要看的檔案/掛點。
-            - name: host-root
-              mountPath: /host
-              readOnly: true
-              mountPropagation: HostToContainer
+      backoffLimit: 0
+      # Job 最長存活時間: 包含工作時間 + sleep-after。預設 1h25m (留 5m 緩衝)。
+      activeDeadlineSeconds: 5100
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app: k8s-healthcheck-runner
+        spec:
+          serviceAccountName: k8s-healthcheck
+          restartPolicy: Never
+          tolerations:
+            - operator: Exists
           securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-      volumes:
-        - name: host-root
-          hostPath:
-            path: /
-            type: Directory
-
-# ----------------------------------------------------------------------------
-# Service: 給 agent DaemonSet 一個內部 ClusterIP (headless)，方便除錯。
-# 實際 aggregator 是用 API server 列 Pod + Pod IP 直連，不依賴此 Service。
-# ----------------------------------------------------------------------------
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: k8s-healthcheck-agent
-  namespace: k8s-healthcheck
-  labels:
-    app: k8s-healthcheck-agent
-spec:
-  clusterIP: None
-  selector:
-    app: k8s-healthcheck-agent
-  ports:
-    - name: http
-      port: 8080
-      targetPort: 8080
-      protocol: TCP
-
-# ----------------------------------------------------------------------------
-# Deployment: aggregator (1 副本)。Pod 跑完 PDF 後 sleep-after，期間可讓
-# 操作員 kubectl cp 取出 PDF；之後容器 exit 並由 Deployment 重新啟動，
-# 即等於每隔 sleep-after 自動產出新報告。
-# ----------------------------------------------------------------------------
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: k8s-healthcheck-aggregator
-  namespace: k8s-healthcheck
-  labels:
-    app: k8s-healthcheck-aggregator
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: k8s-healthcheck-aggregator
-  template:
-    metadata:
-      labels:
-        app: k8s-healthcheck-aggregator
-    spec:
-      serviceAccountName: k8s-healthcheck
-      tolerations:
-        - operator: Exists
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 65532
-        runAsGroup: 65532
-        fsGroup: 65532
-        seccompProfile:
-          type: RuntimeDefault
-      containers:
-        - name: aggregator
-          image: quay.io/cooloo9871/k8s-hk:latest
-          imagePullPolicy: Always
-          args:
-            - --mode=aggregator
-            - --out=/reports
-            - --timeout=5m
-            - --sleep-after=30m
-            - --agent-namespace=k8s-healthcheck
-            - --agent-selector=app=k8s-healthcheck-agent
-            - --agent-port=8080
-            # --env=auto: 依 cluster 規模/distribution 自動推論
-          env:
-            - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: POD_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-          resources:
-            requests:
-              cpu: 50m
-              memory: 96Mi
-            limits:
-              cpu: 500m
-              memory: 384Mi
-          volumeMounts:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: runner
+              image: quay.io/cooloo9871/k8s-hk:latest
+              imagePullPolicy: Always
+              args:
+                - --mode=aggregator
+                - --orchestrate-agent
+                - --out=/reports
+                - --timeout=5m
+                - --sleep-after=1h
+                - --agent-namespace=k8s-healthcheck
+                - --agent-selector=app=k8s-healthcheck-agent
+                - --agent-port=8080
+                - --agent-ready-timeout=2m
+                # - --cluster-name=prod-tw-1   # 取消註解可指定報告上的叢集名稱
+              env:
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                # AGENT_IMAGE 必須與 runner image 同步，這樣動態建立的 DaemonSet
+                # 才會跑到正確的 agent binary。預設旗標讀此環境變數。
+                - name: AGENT_IMAGE
+                  value: quay.io/cooloo9871/k8s-hk:latest
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 96Mi
+                limits:
+                  cpu: 500m
+                  memory: 384Mi
+              volumeMounts:
+                - name: reports
+                  mountPath: /reports
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+          volumes:
             - name: reports
-              mountPath: /reports
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: ["ALL"]
-      volumes:
-        - name: reports
-          emptyDir: {}
+              emptyDir: {}

@@ -31,8 +31,6 @@ type Report struct {
 // Conclusion 存放由 advisor 產生的摘要結論，會渲染在 PDF 最前面的章節。
 // 由 internal/advisor 套件填值。
 type Conclusion struct {
-	Environment     string           // 自動判斷或 --env 指定 (dev/staging/production)
-	EnvironmentAuto bool             // true = 由 cluster 狀態推論，false = 使用者指定
 	OverallStatus   string           // 健康 / 警告 / 嚴重
 	Summary         string           // 一段話總結
 	Findings        []Finding        // 主要發現
@@ -54,12 +52,17 @@ type Recommendation struct {
 }
 
 type ClusterInfo struct {
-	Version       string
-	Platform      string
-	NodeCount     int
-	NamespaceCnt  int
-	TotalPods     int
-	Distribution  string
+	// Name 是 cluster 識別字串，取自 --cluster-name 旗標或自動偵測
+	// (kube-system/kubeadm-config 的 ClusterConfiguration.clusterName，
+	// 或退回 kube-system namespace UID 前 12 碼)。
+	Name         string
+	NameSource   string // "flag" / "kubeadm" / "uid" / "unknown"
+	Version      string
+	Platform     string
+	NodeCount    int
+	NamespaceCnt int
+	TotalPods    int
+	Distribution string
 }
 
 type NodeInfo struct {
@@ -152,18 +155,59 @@ type WorkloadIssue struct {
 }
 
 type StorageSummary struct {
-	PVs            int
-	PVsBound       int
-	PVsAvailable   int
-	PVsReleased    int
-	PVsFailed      int
-	PVCs           int
-	PVCsBound      int
-	PVCsPending    int
-	StorageClasses []string
-	ProblemPVCs    []PVCInfo
+	PVs          int
+	PVsBound     int
+	PVsAvailable int
+	PVsReleased  int
+	PVsFailed    int
+	PVCs         int
+	PVCsBound    int
+	PVCsPending  int
+
+	// StorageClasses 是 cluster 中所有 StorageClass 的詳細資訊清單，
+	// 包含 provisioner、reclaim policy、binding mode 與是否為 default。
+	StorageClasses []StorageClassInfo
+
+	// PVList / PVCList 是完整 PV / PVC 清單，每筆含對應的 StorageClass 名稱。
+	PVList  []PVDetail
+	PVCList []PVCDetail
+
+	// ProblemPVCs 為 Pending 的 PVC 子集 (重複出現也不去除，僅供結論章節速覽)。
+	ProblemPVCs []PVCInfo
 }
 
+// StorageClassInfo 為單一 StorageClass 的描述。
+type StorageClassInfo struct {
+	Name              string
+	Provisioner       string
+	ReclaimPolicy     string
+	VolumeBindingMode string
+	IsDefault         bool
+	PVCount           int // 該 StorageClass 對應的 PV 數量
+	PVCCount          int // 該 StorageClass 對應的 PVC 數量
+}
+
+// PVDetail 為單一 PV 的描述。
+type PVDetail struct {
+	Name        string
+	Capacity    string
+	AccessModes string
+	Status      string
+	Class       string
+	Claim       string // namespace/name
+}
+
+// PVCDetail 為單一 PVC 的描述。
+type PVCDetail struct {
+	Namespace string
+	Name      string
+	Status    string
+	Capacity  string
+	Class     string
+	Volume    string
+}
+
+// PVCInfo 用於 ProblemPVCs (向後相容欄位，與 PVCDetail 內容類似)。
 type PVCInfo struct {
 	Namespace string
 	Name      string
