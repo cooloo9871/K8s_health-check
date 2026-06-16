@@ -139,30 +139,32 @@ managed K8s (EKS / GKE / AKS) 多數路徑不存在, agent 會自動略過該類
 
 ```bash
 # 1. 建置並推送 image (改成你自己的 registry)
-docker build -t <your-registry>/k8s-healthcheck:latest .
-docker push <your-registry>/k8s-healthcheck:latest
+$ sudo podman build -t <your-registry>/k8s-healthcheck:latest .
+$ sudo podman push <your-registry>/k8s-healthcheck:latest
 
 # 2. 替換 manifest 內 image
-sed -i 's|quay.io/cooloo9871/k8s-hk:latest|<your-registry>/k8s-healthcheck:latest|' deploy/all-in-one.yaml
+$ sed -i 's|quay.io/cooloo9871/k8s-hk:latest|<your-registry>/k8s-healthcheck:latest|' deploy/all-in-one.yaml
 
 # 3. 部署 (建立 Namespace + SA + RBAC + CronJob, 暫不會真的跑)
-kubectl apply -f deploy/all-in-one.yaml
+$ kubectl apply -f deploy/all-in-one.yaml
 
 # 4. 立即觸發一輪 (不等排程). NAME 必須放在 --from 之前
-kubectl -n k8s-healthcheck create job k8s-healthcheck-manual-$(date +%s) \
+$ kubectl -n k8s-healthcheck create job k8s-healthcheck-manual-$(date +%s) \
   --from=cronjob/k8s-healthcheck
 
 # 5. 看 Runner 跑
-kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck-runner -f
+$ kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck-runner -f
 
 # 6. Runner 會 sleep --sleep-after, 期間從 emptyDir 取 PDF
-POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-runner \
+$ POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-runner \
         -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}')
-PDF=$(kubectl -n k8s-healthcheck exec "${POD}" -- ls /reports | head -1)
-kubectl -n k8s-healthcheck cp "${POD}:/reports/${PDF}" "./${PDF}"
+
+$ PDF=$(kubectl -n k8s-healthcheck exec "${POD}" -- ls /reports | head -1)
+
+$ kubectl -n k8s-healthcheck cp "${POD}:/reports/${PDF}" "./${PDF}"
 
 # 7. 檢視複製出來的 pdf 檔
-ls -l *.pdf
+$ ls -l *.pdf
 -rw-rw-r-- 1 bigred bigred 133805 Jun 16 15:35 topgun-health-20260616-153250.pdf
 ```
 
