@@ -156,7 +156,7 @@ kubectl -n k8s-healthcheck create job k8s-healthcheck-manual-$(date +%s) \
 kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck-runner -f
 
 # 6. Runner 會 sleep --sleep-after, 期間從 emptyDir 取 PDF
-POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck \
+POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-runner \
         -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}')
 PDF=$(kubectl -n k8s-healthcheck exec "${POD}" -- ls /reports | head -1)
 kubectl -n k8s-healthcheck cp "${POD}:/reports/${PDF}" "./${PDF}"
