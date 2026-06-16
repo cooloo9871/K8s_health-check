@@ -160,6 +160,10 @@ POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck-runner \
         -o jsonpath='{.items[?(@.status.phase=="Running")].metadata.name}')
 PDF=$(kubectl -n k8s-healthcheck exec "${POD}" -- ls /reports | head -1)
 kubectl -n k8s-healthcheck cp "${POD}:/reports/${PDF}" "./${PDF}"
+
+# 7. 檢視複製出來的 pdf 檔
+ls -l *.pdf
+-rw-rw-r-- 1 bigred bigred 133805 Jun 16 15:35 topgun-health-20260616-153250.pdf
 ```
 
 預設 schedule 為每日 08:00 (Asia/Taipei). 修改 `deploy/all-in-one.yaml` 的
