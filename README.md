@@ -153,7 +153,7 @@ kubectl -n k8s-healthcheck create job k8s-healthcheck-manual-$(date +%s) \
   --from=cronjob/k8s-healthcheck
 
 # 5. 看 Runner 跑
-kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck -f
+kubectl -n k8s-healthcheck logs -l app=k8s-healthcheck-runner -f
 
 # 6. Runner 會 sleep --sleep-after, 期間從 emptyDir 取 PDF
 POD=$(kubectl -n k8s-healthcheck get pod -l app=k8s-healthcheck \
