@@ -400,32 +400,19 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 	pdf.AddPage()
 	sectionTitle(pdf, "1. 視覺化儀表板")
 
-	// ----- Pod 圓餅 + 憑證直方 (上半頁) -----
+	// ----- Pod 圓餅 (上半) + 憑證直方 (下半) -----
+	// 改為上下排列: 兩張圖各自全寬, 使用者較易閱讀 (舊版左右並列, 右半 90mm
+	// 太擠導致 bin 標籤難看). 圓餅獨佔上半, 憑證直方獨佔下半.
 	yTop := pdf.GetY()
 	subTitle(pdf, "Pod 狀態分佈")
-	pdf.SetXY(105, yTop)
-	subTitle(pdf, "憑證到期分佈 (剩餘天數)")
 
-	// CrashLoopBackOff / 重啟過多 / container未 Ready 的 Pod 在 K8s 階段上仍是
-	// Running, 但其實處於異常狀態. 把這類從 Running 切片中拆出來, 獨立顯示
-	// 為紅色"異常"切片, 使用者才能在圓餅上看到 crash 影響.
-	//
-	// 注意: 用 p.Phase (K8s 原始 phase) 判斷, 不能用 p.Status — 後者已被
-	// effectivePhase 改為 CrashLoopBackOff 等顯示字串, 不再是 "Running".
-	problemRunning := 0
-	for _, p := range r.ProblemPods {
-		if strings.EqualFold(p.Phase, "Running") {
-			problemRunning++
-		}
-	}
+	// 圓餅單純依 K8s 原始 Phase 統計. Running 的 Pod (含 CrashLoop, container
+	// Waiting=CrashLoopBackOff 等) 一律算 Running (健康); 真正異常的 Pod
+	// 已落在其他切片 (Pending / Failed / Unknown). 詳細的 crash 資訊在第 7
+	// 章「問題 Pod」與第 8 章「Pod 總覽」呈現, 不在這張圓餅上重複.
 	s := r.PodSummary
-	healthyRunning := s.Running - problemRunning
-	if healthyRunning < 0 {
-		healthyRunning = 0
-	}
 	pieSlices := []Slice{
-		{Label: "Running (健康)", Value: float64(healthyRunning), R: 50, G: 140, B: 70},
-		{Label: "異常 (Crash/重啟)", Value: float64(problemRunning), R: 220, G: 80, B: 60},
+		{Label: "Running (健康)", Value: float64(s.Running), R: 50, G: 140, B: 70},
 		{Label: "Pending", Value: float64(s.Pending), R: 240, G: 160, B: 30},
 		{Label: "Failed", Value: float64(s.Failed), R: 198, G: 40, B: 40},
 		{Label: "Succeeded", Value: float64(s.Succeeded), R: 110, G: 130, B: 200},
@@ -433,12 +420,15 @@ func renderDashboard(pdf *gofpdf.Fpdf, r *model.Report) {
 	}
 	drawPie(pdf, 35, yTop+32, 22, pieSlices, 65, yTop+12)
 
-	// 憑證直方 (右半邊): 區塊 (105, yTop+8) 寬 95mm 高 50mm
-	bins := buildCertBins(r.Certs)
-	drawHistogram(pdf, 107, yTop+10, 90, 50, bins)
-
-	// 把游標推到下一段
+	// 憑證直方移到 Pod 圓餅下方, 全寬呈現
 	pdf.SetXY(12, yTop+62)
+	subTitle(pdf, "憑證到期分佈 (剩餘天數)")
+	bins := buildCertBins(r.Certs)
+	drawHistogram(pdf, 12, yTop+72, 186, 40, bins)
+
+	// drawHistogram 結束時已把游標設到 (x, y+h+2); 這裡只再加一點緩衝進入下一段,
+	// 不手動重算絕對座標, 避免日後直方圖高度調整時兩處數字沒同步而重疊.
+	pdf.SetXY(12, pdf.GetY()+2)
 
 	// ----- 節點資源使用率水平條 -----
 	subTitle(pdf, "節點 CPU 使用率")
@@ -707,6 +697,7 @@ func renderPodSummary(pdf *gofpdf.Fpdf, r *model.Report) {
 
 func renderProblemPods(pdf *gofpdf.Fpdf, r *model.Report) {
 	sectionTitle(pdf, "7. 問題 Pod (未就緒 / 重啟 / 失敗)")
+	note(pdf, fmt.Sprintf("重啟次數門檻: 超過 %d 次才會被列為問題 Pod. 偶發 1-2 次重啟 (deploy rollout / 節點重開 / 單次 OOM) 不會出現在這裡, 但會在第 8 章 Pod 總覽完整列出.", model.HighRestartThreshold))
 	if len(r.ProblemPods) == 0 {
 		note(pdf, "未偵測到問題 Pod. ")
 		return

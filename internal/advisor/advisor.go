@@ -200,7 +200,7 @@ func checkPods(r *model.Report, c *model.Conclusion) {
 				appOOMList = append(appOOMList, full)
 			}
 		}
-		if p.Restarts >= 5 {
+		if p.Restarts > model.HighRestartThreshold {
 			highRestartList = append(highRestartList, full)
 		}
 	}
@@ -292,7 +292,7 @@ func checkPods(r *model.Report, c *model.Conclusion) {
 	}
 	if len(highRestartList) > 0 {
 		addFinding(c, SeverityWarning, "Pod",
-			fmt.Sprintf("有 %d 個 Pod 重啟 >= 5 次", len(highRestartList)),
+			fmt.Sprintf("有 %d 個 Pod 重啟超過 %d 次", len(highRestartList), model.HighRestartThreshold),
 			affected("頻繁重啟代表應用程式不穩定, 可能影響 SLO.",
 				"Pod", highRestartList))
 		addRec(c, SeverityWarning, "Pod",

@@ -40,13 +40,11 @@ func TestSmokeRenderTC(t *testing.T) {
 		},
 		PodSummary: model.PodSummary{Total: 87, Running: 80, Pending: 3, Failed: 4},
 		// CrashLoopBackOff Pod 在 K8s 端 Phase 仍為 Running，container 的 waiting
-		// reason 才是 CrashLoopBackOff。以此模擬真實情境，驗證圓餅圖的「異常」
-		// 切片會把這類 Pod 從 Running 中拆出來。
-		// 模擬 collector 端 effectivePhase 後的結果: Status 顯示有效狀態,
-		// Phase 保留 K8s 原始 phase (供 dashboard 圓餅依 raw phase 分桶)。
+		// reason 才是 CrashLoopBackOff。模擬 collector 端 effectivePhase 後的
+		// 結果: Status 顯示有效狀態 (CrashLoopBackOff / ImagePullBackOff 等)。
 		ProblemPods: []model.PodInfo{
-			{Namespace: "app", Name: "api-x", Status: "CrashLoopBackOff", Phase: "Running", Restarts: 9, Reason: "CrashLoopBackOff", Message: "back-off 5m0s restarting failed container=api"},
-			{Namespace: "kube-system", Name: "img-pull-fail", Status: "ImagePullBackOff", Phase: "Pending", Reason: "ImagePullBackOff", Message: "Back-off pulling image \"foo:bar\""},
+			{Namespace: "app", Name: "api-x", Status: "CrashLoopBackOff", Restarts: 9, Reason: "CrashLoopBackOff", Message: "back-off 5m0s restarting failed container=api"},
+			{Namespace: "kube-system", Name: "img-pull-fail", Status: "ImagePullBackOff", Reason: "ImagePullBackOff", Message: "Back-off pulling image \"foo:bar\""},
 		},
 		AllPods: []model.PodOverview{
 			{Namespace: "app", Name: "api-x", Status: "CrashLoopBackOff", PodIP: "10.244.1.5", Node: "node-1"},

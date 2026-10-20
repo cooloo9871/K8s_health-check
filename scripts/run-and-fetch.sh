@@ -1,41 +1,64 @@
 #!/usr/bin/env bash
-# Apply the manifests, wait for the pod to write the PDF, then copy it
-# out and clean up.
+# 套用 deploy/all-in-one.yaml、手動觸發一輪 CronJob，等 Runner 把 PDF 寫出來後
+# kubectl cp 取出，最後提早清掉這次手動建立的 Job (Runner 本來會依
+# --sleep-after 繼續待機方便 cp，取完就沒必要再等)。
+#
+# 用法: scripts/run-and-fetch.sh [輸出目錄，預設為目前目錄]
 set -euo pipefail
 
 NS="k8s-healthcheck"
-POD="k8s-healthcheck"
-OUT="${1:-./k8s-health-report.pdf}"
+OUT_DIR="${1:-.}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo ">> applying RBAC + pod"
-kubectl apply -f "${here}/deploy/rbac.yaml"
-kubectl apply -f "${here}/deploy/pod.yaml"
+echo ">> 套用 manifests (namespace + RBAC + CronJob)"
+kubectl apply -f "${here}/deploy/all-in-one.yaml"
 
-echo ">> waiting for pod to be Ready"
-kubectl -n "${NS}" wait --for=condition=Ready "pod/${POD}" --timeout=2m
+job_name="k8s-healthcheck-manual-$(date +%s)"
+echo ">> 手動觸發一輪: ${job_name}"
+kubectl -n "${NS}" create job "${job_name}" --from=cronjob/k8s-healthcheck
 
-echo ">> waiting for collector to write the PDF (up to 6 min)"
-deadline=$(( $(date +%s) + 360 ))
-while : ; do
-  pdf=$(kubectl -n "${NS}" exec "${POD}" -- /bin/sh -c 'ls /reports/*.pdf 2>/dev/null | head -1' 2>/dev/null || true)
-  if [[ -n "${pdf}" ]]; then
-    echo "   found ${pdf}"
+echo ">> 等待 Runner Pod 啟動"
+pod=""
+deadline=$(( $(date +%s) + 120 ))
+while [[ -z "${pod}" ]]; do
+  pod=$(kubectl -n "${NS}" get pod -l "job-name=${job_name}" \
+        --field-selector=status.phase=Running \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  if [[ -n "${pod}" ]]; then
     break
   fi
   if (( $(date +%s) > deadline )); then
-    echo "!! timed out waiting for PDF" >&2
-    kubectl -n "${NS}" logs "${POD}" || true
+    echo "!! 等待 Runner Pod 啟動逾時" >&2
+    kubectl -n "${NS}" describe job "${job_name}" || true
+    exit 1
+  fi
+  sleep 3
+done
+echo "   pod: ${pod}"
+
+echo ">> 等待 Runner 把 PDF 寫出來 (最長 6 分鐘)"
+deadline=$(( $(date +%s) + 360 ))
+pdf=""
+while : ; do
+  pdf=$(kubectl -n "${NS}" exec "${pod}" -- ls /reports 2>/dev/null | head -1 || true)
+  if [[ -n "${pdf}" ]]; then
+    echo "   找到 ${pdf}"
+    break
+  fi
+  if (( $(date +%s) > deadline )); then
+    echo "!! 等待 PDF 逾時" >&2
+    kubectl -n "${NS}" logs "${pod}" || true
     exit 1
   fi
   sleep 5
 done
 
-echo ">> copying ${pdf} -> ${OUT}"
-kubectl -n "${NS}" cp "${POD}:${pdf}" "${OUT}"
+out="${OUT_DIR%/}/${pdf}"
+echo ">> 複製 ${pdf} -> ${out}"
+kubectl -n "${NS}" cp "${NS}/${pod}:/reports/${pdf}" "${out}"
 
-echo ">> deleting pod (RBAC and namespace are kept; remove with 'kubectl delete -f deploy/rbac.yaml' if you want)"
-kubectl -n "${NS}" delete pod "${POD}" --wait=false
+echo ">> 提早刪除本次手動 Job (RBAC / CronJob / Namespace 保留)"
+kubectl -n "${NS}" delete job "${job_name}" --wait=false
 
-echo ">> done. Report saved to ${OUT}"
+echo ">> 完成，報告已存至 ${out}"

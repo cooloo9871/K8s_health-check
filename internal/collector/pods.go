@@ -62,7 +62,6 @@ func (c *Collector) collectPods(ctx context.Context, r *model.Report) error {
 				Namespace: p.Namespace,
 				Name:      p.Name,
 				Status:    effPhase,
-				Phase:     string(p.Status.Phase),
 				Restarts:  restarts,
 				Node:      p.Spec.NodeName,
 				Age:       humanAge(p.CreationTimestamp.Time),
@@ -200,56 +199,34 @@ func isProblemWaitingReason(reason string) bool {
 	return false
 }
 
-// isProblemPod 判斷 Pod 是否進入「問題清單」。涵蓋常見故障模式:
-// Failed / Pending / Unknown phase、容器未 Ready、任何重啟、典型 Waiting
-// reason、上次終止為 OOMKilled / Error / 非 0 exit code，以及 init container
-// 失敗。設計上偏寬鬆抓多抓滿，符合「有 crash 等異常都抓出來」的需求。
+// isProblemPod 判斷 Pod 是否進入「問題清單」。判定條件:
+//   - Phase 為 Failed / Pending / Unknown → 直接列為問題 (Pod 還沒到 Running)
+//   - Phase 為 Running → 只有當 Pod 累積重啟總數 (所有 main container 加總)
+//     超過 model.HighRestartThreshold 才列為問題; 或任一 init container
+//     單獨累積重啟超過門檻 (init 重啟不計入 PodInfo.Restarts 的加總, 需個別看).
+//     不再看 LastTerminationState (歷史一次 OOM 但目前穩定的 Pod 不算問題),
+//     也不再看 Waiting reason 或 !Ready (這些訊號在累積重啟超過門檻時就會反映).
+//     詳細的當下狀態與 hostPath 仍可在第 8 章 [Pod 總覽] 看到。
+//
+// 注意: 比較對象是「整個 Pod」的重啟總數 (與 collectPods 算給 PodInfo.Restarts
+// 的加總一致, 也是 advisor 的「高重啟」finding 所比對的值) — 不是看單一
+// container 是否各自超過門檻, 否則重啟平均分散在多個 container 的 Pod
+// (例如兩個 container 各重啟 6 次, 總共 12 次) 會被漏掉。
 func isProblemPod(p *corev1.Pod) bool {
 	switch p.Status.Phase {
 	case corev1.PodFailed, corev1.PodPending, corev1.PodUnknown:
 		return true
 	}
-	if hasAbnormalContainer(p.Status.ContainerStatuses, p.Status.Phase, false) {
+	var restarts int32
+	for _, cs := range p.Status.ContainerStatuses {
+		restarts += cs.RestartCount
+	}
+	if restarts > model.HighRestartThreshold {
 		return true
 	}
-	if hasAbnormalContainer(p.Status.InitContainerStatuses, p.Status.Phase, true) {
-		return true
-	}
-	return false
-}
-
-// hasAbnormalContainer 判斷一組 ContainerStatus 中是否有任一 container 進入
-// 應被視為異常的狀態。isInit=true 時表示是 init container，那麼即便 Pod 已是
-// Running 也要看 init 是否一直卡住。
-func hasAbnormalContainer(statuses []corev1.ContainerStatus, phase corev1.PodPhase, isInit bool) bool {
-	for _, cs := range statuses {
-		// 非 Ready 的長壽容器
-		if !cs.Ready && phase == corev1.PodRunning && !isInit {
+	for _, cs := range p.Status.InitContainerStatuses {
+		if cs.RestartCount > model.HighRestartThreshold {
 			return true
-		}
-		// 任何重啟都列為異常: 雖然偶發 1 次重啟可能是部署時,
-		// 但使用者要求把 crash 通通抓出來，所以採寬鬆策略。
-		if cs.RestartCount > 0 {
-			return true
-		}
-		if cs.State.Waiting != nil {
-			switch cs.State.Waiting.Reason {
-			case "CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull",
-				"CreateContainerConfigError", "InvalidImageName",
-				"RegistryUnavailable", "RunContainerError",
-				"PostStartHookError", "PreStartHookError":
-				return true
-			}
-		}
-		// 上次終止異常: OOMKilled / Error / 非 0 exit
-		if t := cs.LastTerminationState.Terminated; t != nil {
-			switch t.Reason {
-			case "OOMKilled", "Error", "ContainerCannotRun", "DeadlineExceeded":
-				return true
-			}
-			if t.ExitCode != 0 && t.Reason != "Completed" {
-				return true
-			}
 		}
 	}
 	return false

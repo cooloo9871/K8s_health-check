@@ -59,14 +59,14 @@ DaemonSet。
 | 章節 | 內容 |
 | --- | --- |
 | **0. 結論與建議** | 整體狀態 (健康 / 警告 / 嚴重)、摘要、主要發現表、依優先級排序的建議事項表; 異常 Pod / 節點名稱會直接列在 Detail 中 |
-| **1. 視覺化儀表板** | Pod 狀態圓餅 (含紅色「異常」切片)、憑證到期分佈直方、節點 CPU / 記憶體 / 磁碟水平條 |
+| **1. 視覺化儀表板** | Pod 狀態圓餅 + 憑證到期分佈直方 (上下排列, 各自全寬), 接著節點 CPU / 記憶體 / 磁碟水平條 |
 | 2. 叢集總覽 | 版本、平台、節點 / Namespace / Pod 數、發行版本標籤、agent 回報節點數 |
 | 3. 節點 | 名稱、角色、狀態、kubelet/runtime/OS、內部 IP、存活時間, 以及**所有節點 Conditions** |
 | 4. 節點資源使用率 | `metrics.k8s.io`: CPU / 記憶體 使用 vs 容量 (% 與絕對值)、Pod 數 vs Pod 上限 |
 | 5. **節點磁碟使用率** | 來自 agent: 每節點 / 每掛點 Total / Used / Avail / 使用率 / 狀態 (label 過長自動換行) |
 | 6. Pod 摘要 | Total / Running / Pending / Succeeded / Failed / Unknown |
-| 7. 問題 Pod | 未 Ready / CrashLoopBackOff / ImagePullBackOff / >=5 次重啟 / Pending. **Phase 欄會顯示實際狀態** (CrashLoop pod 不再誤顯示為 Running) |
-| **8. Pod 總覽** | **全部** (非 collector 自身) Pod 的詳細清單: ns / name / phase / Pod IP / 排程節點 / **HostPath 掛載目錄**. kube-system Pod 一律排在最後 |
+| 7. 問題 Pod | 未 Ready / CrashLoopBackOff / ImagePullBackOff / **>10 次重啟** / Pending. **Status 欄會顯示實際狀態** (CrashLoop pod 不再誤顯示為 Running). 偶發 1-2 次重啟不會列在這, 想看所有 Pod 請看第 8 章 |
+| **8. Pod 總覽** | **全部** (非 collector 自身) Pod 的詳細清單: ns / name / Status / Pod IP / 排程節點 / **HostPath 掛載目錄**. kube-system Pod 一律排在最後 |
 | 9. 資源耗用前段班 | CPU / 記憶體 用量前 10 名 |
 | 10. 工作負載 | Deployments / DaemonSets / StatefulSets / ReplicaSets / Jobs / CronJobs 統計 + 不健康清單 |
 | 11. 儲存 | StorageClasses (含 default 標記) + PV 詳情 + PVC 詳情 |
@@ -81,10 +81,11 @@ DaemonSet。
 
 ### 視覺化圖表
 
-* **Pod 狀態圓餅**: Running (健康) / 異常 (Crash 或重啟) / Pending / Failed /
-  Succeeded / Unknown 比例. 「異常」切片用 K8s 原始 Phase=Running 但實際異常
-  的 Pod 數量計算, 凸顯 CrashLoop 的影響.
-* **憑證到期分佈直方**: 已過期 / <7 天 / 7-30 天 / 30-90 天 / 90-180 天 / >180 天
+* **Pod 狀態圓餅**: Running (健康) / Pending / Failed / Succeeded / Unknown 比例,
+  純粹依 K8s 原始 Phase 統計. Phase=Running 的 Pod 一律算健康 (含 CrashLoop / 高
+  重啟), 詳細故障狀態請看第 7 章「問題 Pod」與第 8 章「Pod 總覽」.
+* **憑證到期分佈直方** (Pod 圓餅下方, 全寬): 已過期 / <7 天 / 7-30 天 / 30-90 天 /
+  90-180 天 / >180 天
 * **節點 CPU / 記憶體 / 磁碟水平條**: 各節點並列, 依使用率上色 (綠 / 琥珀 / 紅);
   label 過長自動換行而非截斷
 
@@ -103,6 +104,11 @@ agent DaemonSet 會掃下列來源 (採到後合併進 PDF 第 13 章):
 
 managed K8s (EKS / GKE / AKS) 多數路徑不存在, agent 會自動略過該類別.
 
+PDF 顯示的路徑是**節點上的真實絕對路徑** (例如 `/etc/kubernetes/pki/apiserver.crt`),
+不是 agent 容器內看到的 `/host/...`. 三道獨立防線確保 PDF 永遠不出現 `/host` 前綴:
+agent 寫 CertInfo 前 strip → aggregator merge 時 normalize → PDF 渲染前再 strip
+一次. 即使部分節點還在跑舊版 agent image, 報告仍會顯示正確路徑.
+
 ## 結論與建議
 
 報告最前面會有由 `internal/advisor` 產生的「結論與建議」章節:
@@ -119,11 +125,16 @@ managed K8s (EKS / GKE / AKS) 多數路徑不存在, agent 會自動略過該類
     longhorn-system 等系統 namespace, 或名稱包含 etcd-, kube-apiserver,
     kube-controller-manager, kube-scheduler, kube-proxy, coredns, calico,
     cilium, flannel, weave-net, kube-router, kindnet 的 Pod
-  * 涵蓋: CrashLoopBackOff / OOMKilled / ImagePullBackOff
+  * 涵蓋: ImagePullBackOff (Pod 仍處 Pending, 立即偵測) / CrashLoopBackOff /
+    OOMKilled (Pod 階段仍為 Running, 需累積重啟次數超過門檻才會列入問題清單
+    並觸發此規則, 見下方閾值表「Pod 重啟次數」; 目的是避免偶發 1-2 次重啟
+    洗版報告, 代價是系統元件剛開始 crash loop 時不會立刻被標為 Critical)
 * **應用 workload** 異常 → **Warning** (警告)
-  * 一般 namespace 的 CrashLoop / OOMKilled / ImagePullBackOff
+  * 一般 namespace 的 ImagePullBackOff 立即偵測; CrashLoopBackOff / OOMKilled
+    同樣需累積重啟次數超過門檻才列入問題清單
   * 高重啟、Pending 等
-* **Unknown** Pod 永遠視為 Critical (kubelet 失聯本身就是系統問題)
+* **Unknown** Pod 永遠視為 Critical (kubelet 失聯本身就是系統問題, 不受重啟
+  門檻限制, 立即偵測)
 
 ### 閾值 (單一組, 不分環境)
 
@@ -134,6 +145,7 @@ managed K8s (EKS / GKE / AKS) 多數路徑不存在, agent 會自動略過該類
 | 憑證剩餘天數 | <=30 | <=7 |
 | 警告事件數 | >25 | - |
 | 節點磁碟使用率 | >=80 | >=90 |
+| Pod 重啟次數 (進問題清單; 同時是 Running 階段 Pod 的 CrashLoop/OOMKilled 判定門檻) | >10 | - |
 
 ## 快速開始
 

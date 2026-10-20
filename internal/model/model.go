@@ -103,6 +103,12 @@ type NodeMetric struct {
 	PodCapacity int
 }
 
+// HighRestartThreshold 是「Pod 重啟次數過多」的單一門檻值: 同時供
+// collector (是否進問題清單) 與 advisor (是否產生「高重啟」finding) 使用,
+// 避免兩處各自寫死數字導致改一邊忘了改另一邊。比較對象統一為單一 Pod 的
+// 累計重啟總數 (所有 container, 含 init, 加總), 而非單一 container 的值。
+const HighRestartThreshold = 10
+
 type PodSummary struct {
 	Total     int
 	Running   int
@@ -116,12 +122,8 @@ type PodInfo struct {
 	Namespace string
 	Name      string
 	// Status 為顯示用的有效狀態 (例如 CrashLoopBackOff / OOMKilled),
-	// 由 collector 端的 effectivePhase 計算; 與 Phase 不一定相同。
-	Status string
-	// Phase 為 K8s 原始 Pod.Status.Phase 字串 (Running / Pending / Failed
-	// / Succeeded / Unknown). 用於儀表板等需依 raw phase 分桶的地方;
-	// 一般顯示請用 Status。
-	Phase    string
+	// 由 collector 端的 effectivePhase 計算。
+	Status   string
 	Restarts int32
 	Node     string
 	Age      string
